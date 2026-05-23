@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Jazz Jackrabbit 1 DOS Data Level Editor v13 (WYSIWYG UX cleanup)
+Jazz Jackrabbit 1 DOS Data Level Editor v23 (reliable animation picker)
 
 Standalone editor for original DOS Jazz Jackrabbit 1 data files. OpenJazz is used only as a reference for interpreting the original format.
 
@@ -30,11 +30,12 @@ import argparse
 import os
 import struct
 import sys
+import subprocess
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 try:
     from PIL import Image, ImageDraw, ImageTk
@@ -65,6 +66,352 @@ EVENT_FIELD_NAMES = [
 ]
 
 
+RESERVED_ENGINE_EVENTS = {
+    122: {
+        "name": "One-way platform marker",
+        "category": "engine marker/collision",
+        "summary": "Jump-through / semi-solid collision marker. checkMaskUp ignores this cell, checkMaskDown still uses the tile mask.",
+        "editor_hint": "Place this event on a tile that has a collision mask. Do not duplicate its definition to make a new one-way type; the engine checks event ID 122 directly.",
+    },
+    123: {
+        "name": "Animated foreground tile marker",
+        "category": "engine marker/foreground",
+        "summary": "Draws an animated foreground tile over the player. Uses event definition multiA/multiB as alternating tile indices.",
+        "editor_hint": "Use for waterfall-like animated foreground overlay tiles. This behavior is hardcoded by event ID 123.",
+    },
+    124: {
+        "name": "Foreground pass-through solid tile marker",
+        "category": "engine marker/foreground",
+        "summary": "Draws the tile again in the foreground while normal solidity is bypassed/treated specially by the engine/data pattern.",
+        "editor_hint": "Use for tiles that visually appear in front of the player while acting pass-through in the intended setup.",
+    },
+    125: {
+        "name": "Foreground decoration marker",
+        "category": "engine marker/foreground",
+        "summary": "Draws an otherwise background/decorative tile in front of the player, e.g. grass overlays.",
+        "editor_hint": "Use for visual foreground decorations. It is a marker, not a normal object type.",
+    },
+    126: {
+        "name": "Spike / hurt marker",
+        "category": "engine marker/hazard",
+        "summary": "Damage marker. checkSpikes only treats a masked tile as painful when the cell event is 126.",
+        "editor_hint": "Place on a tile with an appropriate collision mask to make it hurt the player.",
+    },
+}
+
+RESERVED_ENGINE_EVENT_START = min(RESERVED_ENGINE_EVENTS)
+NORMAL_EDITABLE_EVENT_MAX = RESERVED_ENGINE_EVENT_START - 1
+
+
+def is_reserved_engine_event(event_id: int) -> bool:
+    return int(event_id) in RESERVED_ENGINE_EVENTS
+
+
+def reserved_event_info(event_id: int) -> Optional[Dict[str, str]]:
+    return RESERVED_ENGINE_EVENTS.get(int(event_id))
+
+
+
+
+PICKUP_MODIFIER_MEANINGS = {
+    1: ("Invincibility", "touch pickup; gives temporary invincibility"),
+    2: ("Health / carrot-like", "touch pickup; adds health"),
+    3: ("Full health", "touch pickup; restores full health"),
+    4: ("Extra life", "touch pickup; adds life"),
+    5: ("High-jump feet", "touch pickup; increases jump height"),
+    9: ("Sand timer", "touch pickup; adds timer"),
+    10: ("Checkpoint", "touch trigger/pickup; sets checkpoint"),
+    11: ("Generic score item", "touch pickup; item with score only"),
+    12: ("Rapid fire", "touch pickup; increases fire speed"),
+    15: ("Ammo weapon 0 ×15", "touch ammo pickup"),
+    16: ("Ammo weapon 1 ×15", "touch ammo pickup"),
+    17: ("Ammo weapon 2 ×15", "touch ammo pickup"),
+    18: ("Ammo weapon 0 ×2", "small ammo pickup"),
+    19: ("Ammo weapon 1 ×2", "small ammo pickup"),
+    20: ("Ammo weapon 2 ×2", "small ammo pickup"),
+    26: ("Fast feet box", "touch pickup; speed boost + music tempo"),
+    27: ("End of level", "touch trigger; exits level"),
+    30: ("TNT ammo ×1", "touch ammo pickup"),
+    31: ("Water level trigger", "touch trigger; sets water level to gridY+1"),
+    33: ("1-hit shield", "touch pickup; shield=1"),
+    34: ("Bird companion", "touch pickup; spawns bird helper"),
+    35: ("Airboard / flight", "touch pickup; enables flight"),
+    36: ("4-hit shield", "touch pickup; shield=5"),
+    37: ("Diamond", "touch pickup; enables gem/diamond state"),
+    39: ("Ammo weapon 3 ×15", "touch ammo pickup"),
+    40: ("Ammo weapon 3 ×2", "small ammo pickup"),
+    41: ("Bonus level / end trigger", "touch trigger; may set next level via multiA/multiB"),
+}
+
+MODIFIER_TOUCH_MEANINGS = {
+    0: ("Enemy / hurt on touch", "if strength > 0, hurts player and can be killed; if strength == 0 and points/modifier logic allows, may be a touch pickup fallback"),
+    7: ("Destructible / no touch pickup", "used with destructible blocks; contact does not consume it"),
+    8: ("Boss / guardian", "boss-like hurt/end behavior"),
+    13: ("Warp", "touch trigger; multiA/multiB are target X/Y"),
+    28: ("Conveyor belt", "touch effect; magnitude controls push direction/speed"),
+    29: ("Upwards spring", "touch effect; magnitude controls target height; sound is played"),
+    31: ("Water level", "touch trigger; sets water level"),
+    32: ("Float / side float", "touch effect; multiA/multiB choose float mode/height"),
+    38: ("Airboard off", "touch trigger; disables flight"),
+    **PICKUP_MODIFIER_MEANINGS,
+}
+
+MOVEMENT_FIELD_MEANINGS = {
+    0: ("Static", {}),
+    1: ("Sink down", {}),
+    2: ("Walk side-to-side", {"speed": "movement divisor", "left_anim": "walking left", "right_anim": "walking right"}),
+    3: ("Seek Jazz horizontally", {"speed": "movement divisor"}),
+    4: ("Walk side-to-side and fall/down hills", {"speed": "movement divisor", "strength": "enemy health if modifier=0"}),
+    6: ("Use level path", {"multi_a": "path index", "speed": "mostly bypassed by path positioning"}),
+    7: ("Use level path / flying snake", {"multi_a": "path index"}),
+    11: ("Sink to ground", {}),
+    12: ("Slow horizontal patrol", {"speed": "movement divisor"}),
+    13: ("Slow vertical patrol", {"speed": "movement divisor"}),
+    16: ("Move across level", {"magnitude": "horizontal direction/speed multiplier"}),
+    21: ("Destructible block", {"strength": "hits required", "multi_a": "tile ID to set after destroyed", "finish_anim": "destroy animation"}),
+    25: ("Float up / belt visual", {}),
+    26: ("Flip animation on overlap", {"left_anim": "active/compressed", "right_anim": "idle"}),
+    29: ("Rotate", {"piece_size": "radius piece size", "pieces": "radius count", "angle": "start angle", "magnitude": "rotation speed"}),
+    30: ("Swing", {"piece_size": "radius piece size", "pieces": "radius count", "angle": "start angle", "magnitude": "swing speed"}),
+    31: ("Fast horizontal platform", {"speed": "movement divisor"}),
+    32: ("Horizontal platform with range", {"piece_size": "range in tiles"}),
+    33: ("Sparks-like follower", {}),
+    34: ("Launching event", {"multi_a": "launch height factor"}),
+    37: ("Repel / sucker tube", {"multi_a": "height/strength parameter", "multi_b": "vertical mode flag", "magnitude": "direction sign"}),
+    38: ("Repel / sucker tube variant", {"multi_a": "height/strength parameter", "multi_b": "vertical mode flag", "magnitude": "direction sign"}),
+    39: ("Collapsing floor", {}),
+    40: ("Monochrome effect", {}),
+    42: ("Reflection effect", {}),
+    45: ("Semitransparency effect", {}),
+    53: ("Water-aware slow turtle movement", {}),
+    57: ("Bubbles", {}),
+}
+
+
+def modifier_meaning(modifier: int) -> Tuple[str, str]:
+    return MODIFIER_TOUCH_MEANINGS.get(int(modifier), (f"modifier_{modifier}", "unknown / event-specific modifier"))
+
+
+def movement_meaning_detail(movement: int) -> Tuple[str, Dict[str, str]]:
+    return MOVEMENT_FIELD_MEANINGS.get(int(movement), (movement_name(int(movement)), {}))
+
+
+def semantic_event_category(event_id: int, raw: bytes, name: str = "") -> str:
+    if event_id == 0:
+        return "empty"
+    if is_reserved_engine_event(event_id):
+        return RESERVED_ENGINE_EVENTS[event_id]["category"]
+    movement = raw[4] if len(raw) > 4 else 0
+    strength = raw[9] if len(raw) > 9 else 0
+    modifier = raw[10] if len(raw) > 10 else 0
+    points = raw[11] if len(raw) > 11 else 0
+    if modifier in PICKUP_MODIFIER_MEANINGS and strength == 0:
+        return "pickup/touch item"
+    if modifier in PICKUP_MODIFIER_MEANINGS and strength > 0:
+        return "shootable pickup/container"
+    if modifier == 0 and strength:
+        return "enemy/hazard"
+    if movement == 21 or modifier == 7:
+        return "destructible/level geometry"
+    if modifier in {28, 29, 31, 32, 38, 13}:
+        return "touch trigger/mechanism"
+    if points and not strength:
+        return "pickup/touch item"
+    return classify_event(event_id, raw, name)
+
+
+def semantic_event_lines(event_id: int, raw: bytes, name: str = "") -> List[str]:
+    if event_id == 0:
+        return ["Empty event slot / erase marker."]
+    if is_reserved_engine_event(event_id):
+        info = RESERVED_ENGINE_EVENTS[event_id]
+        return [
+            f"Reserved engine marker: {info['name']}",
+            info["summary"],
+            info["editor_hint"],
+        ]
+
+    movement = raw[4]
+    modifier = raw[10]
+    strength = raw[9]
+    points = raw[11]
+    magnitude = raw[8]
+    speed = raw[15] + 1
+    anim_speed = raw[17] + 1
+    movement_label, movement_fields = movement_meaning_detail(movement)
+    modifier_label, modifier_detail = modifier_meaning(modifier)
+    category = semantic_event_category(event_id, raw, name)
+    lines = [
+        f"Semantic category: {category}",
+        f"Modifier: {modifier} — {modifier_label}",
+        f"  {modifier_detail}",
+        f"Movement: {movement} — {movement_label}",
+    ]
+
+    if category == "shootable pickup/container":
+        lines.extend([
+            "This looks like a pickup effect hidden behind health/strength.",
+            "strength > 0 means it must be hit/destroyed before the pickup/effect is awarded.",
+            f"After destruction/takeEvent, modifier {modifier} gives: {modifier_label}.",
+        ])
+    elif category == "pickup/touch item":
+        lines.append("strength == 0 means the player can collect/trigger it by touching it.")
+    elif category == "enemy/hazard":
+        lines.append("modifier 0 + strength > 0 is counted as enemy/hazard; touching hurts, hits can kill it.")
+    elif category == "destructible/level geometry":
+        lines.append("movement 21 / modifier 7 are commonly used for destructible blocks or geometry helpers.")
+
+    if modifier in {15, 16, 17, 18, 19, 20, 30, 39, 40}:
+        lines.append("Weapon/ammo identity is encoded by modifier, not by the generic pickup category.")
+
+    if points:
+        lines.append(f"Score added on successful collection/kill: points ×10 = {points * 10}.")
+    if strength:
+        lines.append(f"Strength/health/hits: {strength}. Meaning depends on modifier/movement.")
+    if raw[12]:
+        lines.append(f"Bullet type reference: {raw[12]} — {bullet_type_label(raw[12])}.")
+    if raw[13]:
+        lines.append(f"Bullet period: {raw[13]}.")
+    if raw[21]:
+        lines.append(f"Sound effect index: {raw[21]}.")
+    lines.append(f"Speed divisor: {speed}; animation speed: {anim_speed}.")
+    signed_mag = magnitude - 256 if magnitude >= 128 else magnitude
+    if magnitude:
+        lines.append(f"Magnitude: raw {magnitude}, signed {signed_mag}. Meaning depends on modifier/movement.")
+
+    for field, desc in movement_fields.items():
+        idx = {
+            "multi_a": 22, "multi_b": 23, "magnitude": 8, "speed": 15, "strength": 9,
+            "piece_size": 24, "pieces": 25, "angle": 26, "left_anim": 5, "right_anim": 6,
+            "finish_anim": 28,
+        }.get(field)
+        value = raw[idx] if idx is not None and idx < len(raw) else "?"
+        if field == "speed":
+            value = raw[15] + 1
+        lines.append(f"{field}: {value} — {desc}")
+
+    return lines
+
+
+def event_field_label_for(raw: bytes, idx: int) -> str:
+    base = EVENT_FIELD_NAMES[idx] if idx < len(EVENT_FIELD_NAMES) else f"byte_{idx:02d}"
+    if base.startswith("unused"):
+        return base
+    movement = raw[4] if len(raw) > 4 else 0
+    modifier = raw[10] if len(raw) > 10 else 0
+    mapping = {
+        0: "difficulty",
+        2: "reflection / draw flags",
+        4: "movement behavior",
+        5: "left/primary animation",
+        6: "right/secondary animation",
+        8: "magnitude / signed parameter",
+        9: "strength / health / required hits",
+        10: "modifier / touch effect",
+        11: "score points (×10)",
+        12: "bullet type",
+        13: "bullet period",
+        15: "speed minus 1",
+        17: "animation speed minus 1",
+        21: "sound effect",
+        22: "multiA",
+        23: "multiB",
+        24: "piece size / range",
+        25: "pieces / count",
+        26: "angle",
+        28: "finish left animation",
+        29: "finish right animation",
+        30: "shoot left animation",
+        31: "shoot right animation",
+    }
+    label = mapping.get(idx, base)
+    if idx == 22 and movement in {6, 7}:
+        label = "path index (multiA)"
+    elif idx == 22 and modifier == 13:
+        label = "warp target X (multiA)"
+    elif idx == 23 and modifier == 13:
+        label = "warp target Y (multiB)"
+    elif idx == 22 and modifier == 41:
+        label = "bonus/next level (multiA)"
+    elif idx == 23 and modifier == 41:
+        label = "bonus/next world (multiB)"
+    elif idx == 10:
+        label = "modifier / pickup identity"
+    elif idx == 9 and modifier in PICKUP_MODIFIER_MEANINGS:
+        label = "strength: 0 touch, >0 shootable"
+    return label
+
+
+
+
+BULLET_TYPE_HINTS = {
+    0: "Weapon 0 / blaster-like projectile",
+    1: "Weapon 1 projectile",
+    2: "Weapon 2 projectile",
+    3: "Weapon 3 projectile",
+    4: "TNT / explosive",
+}
+
+
+def bullet_type_label(bullet_id: int) -> str:
+    bullet_id = int(bullet_id)
+    return BULLET_TYPE_HINTS.get(bullet_id, f"Bullet type {bullet_id}")
+
+
+EVENT_CONCEPTS = [
+    "Unused / empty",
+    "Auto / keep current",
+    "Enemy / hazard",
+    "Touch pickup / item",
+    "Shootable pickup / container",
+    "Destructible block",
+    "Spring / bounce",
+    "Warp trigger",
+    "Conveyor belt",
+    "Path-moving object",
+    "Foreground / engine marker",
+    "Raw / advanced",
+]
+
+PICKUP_COMBO_LABELS = [f"{k}: {v[0]}" for k, v in sorted(PICKUP_MODIFIER_MEANINGS.items())]
+PICKUP_COMBO_TO_MODIFIER = {label: int(label.split(":", 1)[0]) for label in PICKUP_COMBO_LABELS}
+
+
+def infer_event_concept(event_id: int, raw: bytes, name: str = "") -> str:
+    if event_id == 0:
+        return "Unused / empty"
+    if not any(raw) and not name:
+        return "Unused / empty"
+    if is_reserved_engine_event(event_id):
+        return "Foreground / engine marker"
+    category = semantic_event_category(event_id, raw, name)
+    modifier = raw[10]
+    movement = raw[4]
+    strength = raw[9]
+    if category == "shootable pickup/container":
+        return "Shootable pickup / container"
+    if category == "pickup/touch item":
+        return "Touch pickup / item"
+    if category == "enemy/hazard":
+        return "Enemy / hazard"
+    if movement == 21 or modifier == 7:
+        return "Destructible block"
+    if modifier == 29:
+        return "Spring / bounce"
+    if modifier == 13:
+        return "Warp trigger"
+    if modifier == 28:
+        return "Conveyor belt"
+    if movement in {6, 7}:
+        return "Path-moving object"
+    return "Raw / advanced"
+
+
+def _first_modifier_for_pickup() -> int:
+    return 11
+
+EDITABLE_EVENT_FIELD_INDICES = [i for i, name in enumerate(EVENT_FIELD_NAMES) if not name.startswith("unused")]
+
 def movement_name(value: int) -> str:
     names = {
         0: "static", 2: "walker/platform-like", 4: "fall/drop", 6: "fly/hover", 12: "fly right", 16: "fly left",
@@ -78,6 +425,8 @@ def movement_name(value: int) -> str:
 def classify_event(event_id: int, raw: bytes, name: str) -> str:
     if event_id == 0:
         return "empty"
+    if is_reserved_engine_event(event_id):
+        return RESERVED_ENGINE_EVENTS[event_id]["category"]
     n = (name or "").lower()
     strength = raw[9] if len(raw) > 9 else 0
     modifier = raw[10] if len(raw) > 10 else 0
@@ -107,6 +456,9 @@ def classify_event(event_id: int, raw: bytes, name: str) -> str:
 def event_summary(event_id: int, raw: bytes, name: str) -> str:
     if event_id == 0:
         return "empty"
+    if is_reserved_engine_event(event_id):
+        info = RESERVED_ENGINE_EVENTS[event_id]
+        return f"{event_id:03d} {info['name']}  [{info['category']}]  RESERVED ENGINE MARKER"
     category = classify_event(event_id, raw, name)
     return (
         f"{event_id:03d} {name or '(unnamed)'}  [{category}]  "
@@ -118,6 +470,9 @@ def event_summary(event_id: int, raw: bytes, name: str) -> str:
 def human_event_description(ev: EventDefinition) -> str:
     if ev.event_id == 0:
         return "empty / no object"
+    if is_reserved_engine_event(ev.event_id):
+        info = RESERVED_ENGINE_EVENTS[ev.event_id]
+        return f"{info['name']}; {info['summary']}"
     raw = ev.raw
     name = (ev.name or "").lower()
     category = ev.category
@@ -169,6 +524,8 @@ def friendly_event_name(ev: "EventDefinition") -> str:
     """
     if ev.event_id == 0:
         return "Empty / erase event"
+    if is_reserved_engine_event(ev.event_id):
+        return RESERVED_ENGINE_EVENTS[ev.event_id]["name"]
     raw = ev.raw
     original = ev.name.strip()
     category = ev.category
@@ -225,6 +582,16 @@ def friendly_event_name(ev: "EventDefinition") -> str:
 
 def object_tooltip(ev: "EventDefinition") -> str:
     raw = ev.raw
+    if is_reserved_engine_event(ev.event_id):
+        info = RESERVED_ENGINE_EVENTS[ev.event_id]
+        return (
+            f"Event {ev.event_id:03d}: {info['name']}\n"
+            f"Category: {info['category']}\n"
+            f"Scope: reserved engine marker ID, not a normal level-local object type\n"
+            f"Meaning: {info['summary']}\n"
+            f"Editor: {info['editor_hint']}\n"
+            f"Raw event definition bytes still exist in the level, but the key behavior is tied to the numeric event ID."
+        )
     return (
         f"Event {ev.event_id:03d}: {friendly_event_name(ev)}\n"
         f"Category: {ev.category}\n"
@@ -379,7 +746,11 @@ class EventDefinition:
 
     @property
     def category(self) -> str:
-        return classify_event(self.event_id, self.raw, self.name)
+        return semantic_event_category(self.event_id, self.raw, self.name)
+
+    @property
+    def is_reserved_engine_marker(self) -> bool:
+        return is_reserved_engine_event(self.event_id)
 
     @property
     def movement(self) -> int:
@@ -988,7 +1359,7 @@ def _read_one_jj1_sprite(data: bytes, p: int, index: int, palette: List[Tuple[in
 class LevelEditorApp(tk.Tk):
     def __init__(self, game_dir: Path):
         super().__init__()
-        self.title("Jazz Jackrabbit 1 DOS Data Level Editor v13")
+        self.title("Jazz Jackrabbit 1 DOS Data Level Editor v23")
         self.geometry("1420x880")
         self.minsize(1100, 700)
 
@@ -1049,7 +1420,12 @@ class LevelEditorApp(tk.Tk):
         self._chunk_photos: Dict[Tuple[int, int], ImageTk.PhotoImage] = {}
         self._chunk_items: Dict[Tuple[int, int], int] = {}
         self._brush_preview_items: List[int] = []
+        self._brush_preview_photos: List[ImageTk.PhotoImage] = []
+        self._asset_photo_refs: List[ImageTk.PhotoImage] = []
+        self.dirty = False
+        self.current_save_path: Optional[Path] = None
 
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
         self._build_ui()
         self._load_level_list()
 
@@ -1061,10 +1437,12 @@ class LevelEditorApp(tk.Tk):
         toolbar.pack(fill=tk.X)
         ttk.Button(toolbar, text="Open game dir", command=self.open_game_dir).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Reload", command=self.reload_current).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Save as...", command=self.save_as).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(toolbar, text="Save", command=self.save).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(toolbar, text="Save as...", command=self.save_as).pack(side=tk.LEFT, padx=(3, 0))
         ttk.Button(toolbar, text="Undo", command=self.undo).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(toolbar, text="Redo", command=self.redo).pack(side=tk.LEFT, padx=(3, 0))
         ttk.Button(toolbar, text="Validate", command=self.refresh_validation).pack(side=tk.LEFT, padx=(6, 0))
+        self.bind_all("<Control-s>", lambda _e: self.save())
         self.bind_all("<Control-z>", lambda _e: self.undo())
         self.bind_all("<Control-y>", lambda _e: self.redo())
         self.bind_all("<Control-Shift-Z>", lambda _e: self.redo())
@@ -1072,7 +1450,7 @@ class LevelEditorApp(tk.Tk):
         ttk.Label(toolbar, text="Level:").pack(side=tk.LEFT)
         self.level_combo = ttk.Combobox(toolbar, state="readonly", width=24)
         self.level_combo.pack(side=tk.LEFT, padx=(4, 8))
-        self.level_combo.bind("<<ComboboxSelected>>", lambda _e: self.load_selected_level())
+        self.level_combo.bind("<<ComboboxSelected>>", lambda _e: self.request_load_selected_level())
         ttk.Label(toolbar, text="Zoom:").pack(side=tk.LEFT)
         ttk.Spinbox(toolbar, from_=1, to=4, textvariable=self.zoom, width=4, command=self.render_map).pack(side=tk.LEFT, padx=(4, 8))
         ttk.Checkbutton(toolbar, text="Grid", variable=self.show_grid, command=self.render_map).pack(side=tk.LEFT)
@@ -1099,8 +1477,16 @@ class LevelEditorApp(tk.Tk):
         ]:
             ttk.Radiobutton(modebar, text=text, value=value, variable=self.tool_mode, command=self._mode_changed).pack(side=tk.LEFT, padx=(0, 12))
 
-        panes = ttk.PanedWindow(root, orient=tk.HORIZONTAL)
-        panes.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        self.main_tabs = ttk.Notebook(root)
+        self.main_tabs.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+
+        self.level_editor_page = ttk.Frame(self.main_tabs)
+        self.assets_browser_page = ttk.Frame(self.main_tabs)
+        self.main_tabs.add(self.level_editor_page, text="Level Editor")
+        self.main_tabs.add(self.assets_browser_page, text="Assets Browser")
+
+        panes = ttk.PanedWindow(self.level_editor_page, orient=tk.HORIZONTAL)
+        panes.pack(fill=tk.BOTH, expand=True)
 
         left = ttk.Frame(panes)
         panes.add(left, weight=5)
@@ -1124,51 +1510,47 @@ class LevelEditorApp(tk.Tk):
         self.canvas.bind("<Button-2>", self.pick_from_map)
         self.canvas.bind("<Motion>", self.on_canvas_motion)
 
-        # v11: three high-level workspaces.
-        # BUILD: WYSIWYG level placement.
-        # LEVEL LOCAL: definitions stored inside the currently opened level file.
-        # GAME GLOBALS: assets/data shared by the game installation outside any one level.
         self.workspace_tabs = ttk.Notebook(right)
-        self.workspace_tabs.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        self.workspace_tabs.pack(fill=tk.BOTH, expand=True)
 
         self.build_workspace = ttk.Frame(self.workspace_tabs)
         self.define_workspace = ttk.Frame(self.workspace_tabs)
-        self.game_globals_workspace = ttk.Frame(self.workspace_tabs)
-        self.workspace_tabs.add(self.build_workspace, text="BUILD - place things")
-        self.workspace_tabs.add(self.define_workspace, text="LEVEL LOCAL - current level")
-        self.workspace_tabs.add(self.game_globals_workspace, text="GAME GLOBALS - shared assets")
+        self.event_defs_workspace = ttk.Frame(self.workspace_tabs)
+        self.workspace_tabs.add(self.build_workspace, text="BUILD")
+        self.workspace_tabs.add(self.event_defs_workspace, text="EVENT DEFS")
+        self.workspace_tabs.add(self.define_workspace, text="LEVEL LOCAL")
 
         self.build_tabs = ttk.Notebook(self.build_workspace)
         self.build_tabs.pack(fill=tk.BOTH, expand=True)
         self.define_tabs = ttk.Notebook(self.define_workspace)
         self.define_tabs.pack(fill=tk.BOTH, expand=True)
-        self.game_tabs = ttk.Notebook(self.game_globals_workspace)
-        self.game_tabs.pack(fill=tk.BOTH, expand=True)
+        self.event_defs_tabs = ttk.Notebook(self.event_defs_workspace)
+        self.event_defs_tabs.pack(fill=tk.BOTH, expand=True)
 
         self.tabs = self.build_tabs
-        self._build_build_overview_tab()
         self._build_objects_tab()
         self._build_tiles_tab()
         self._build_metadata_tab()
         self._build_layers_tab()
 
-        self.tabs = self.define_tabs
-        self._build_object_types_tab()
+        self.tabs = self.event_defs_tabs
         self._build_event_defs_tab()
+
+        self.tabs = self.define_tabs
         self._build_animations_tab()
         self._build_paths_tab()
         self._build_masks_tab()
-        self._build_globals_tab()
         self._build_events_tab()
         self._build_validation_tab()
 
+        self.game_tabs = ttk.Notebook(self.assets_browser_page)
+        self.game_tabs.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
         self.tabs = self.game_tabs
-        self._build_game_globals_overview_tab()
         self._build_game_assets_tab()
         self._build_game_tilesets_tab()
         self._build_game_sprites_tab()
+        self._build_game_audio_tab()
 
-        # Keep self.tabs pointing at LEVEL LOCAL because most cross-links target definition tabs.
         self.tabs = self.define_tabs
 
         bottom_info = ttk.Frame(root)
@@ -1240,20 +1622,15 @@ class LevelEditorApp(tk.Tk):
             return
         event_id = self.current_event.get()
         if self.selected_object is not None:
-            event_id = self.selected_object.event
-        self.workspace_tabs.select(self.define_workspace)
-        if hasattr(self, "object_types_tab"):
-            self.define_tabs.select(self.object_types_tab)
+            event_id = self.selected_object[0] if isinstance(self.selected_object, int) else self.level.grid[self.selected_object[1]][self.selected_object[0]]["event"]
+        self.workspace_tabs.select(self.event_defs_workspace)
+        if hasattr(self, "event_defs_tabs") and hasattr(self, "event_concept_tab"):
+            self.event_defs_tabs.select(self.event_concept_tab)
         self.highlight_event_id.set(event_id)
         self.current_event.set(event_id)
-        self.refresh_object_types()
-        if hasattr(self, "object_types_tree"):
-            iid = str(event_id)
-            if self.object_types_tree.exists(iid):
-                self.object_types_tree.selection_set(iid)
-                self.object_types_tree.see(iid)
-                self.on_object_type_select(None)
-        self.status.set(f"DEFINE: editing level-local object type Event {event_id:03d}.")
+        self.refresh_event_def_selector()
+        self.select_event_definition(event_id)
+        self.status.set(f"Editing Event {event_id:03d}.")
 
 
 
@@ -1319,31 +1696,199 @@ class LevelEditorApp(tk.Tk):
         tab = ttk.Frame(self.tabs, padding=8)
         self.game_tilesets_tab = tab
         self.tabs.add(tab, text="Tilesets")
-        ttk.Label(tab, text="BLOCKS.xxx are game-global-ish assets: a level references one of these external tileset/palette files. Editing one would affect every level that uses it.", wraplength=430).pack(anchor="w")
         row = ttk.Frame(tab)
-        row.pack(fill=tk.X, pady=(6, 4))
+        row.pack(fill=tk.X, pady=(0, 4))
         ttk.Button(row, text="Refresh", command=self.refresh_game_tilesets).pack(side=tk.LEFT)
-        columns = ("file", "used_by", "tiles", "note")
-        self.game_tilesets_tree = ttk.Treeview(tab, columns=columns, show="headings", height=18, selectmode="browse")
-        for col, width, title in [("file", 110, "Tileset"), ("used_by", 75, "Levels"), ("tiles", 60, "Tiles"), ("note", 315, "Note")]:
+        ttk.Label(row, text="Click a BLOCKS file to preview its tile atlas.").pack(side=tk.LEFT, padx=(8, 0))
+
+        body = ttk.PanedWindow(tab, orient=tk.HORIZONTAL)
+        body.pack(fill=tk.BOTH, expand=True)
+        left = ttk.Frame(body)
+        body.add(left, weight=1)
+        right = ttk.Frame(body)
+        body.add(right, weight=3)
+
+        columns = ("file", "used_by", "tiles")
+        self.game_tilesets_tree = ttk.Treeview(left, columns=columns, show="headings", height=18, selectmode="browse")
+        for col, width, title in [("file", 110, "Tileset"), ("used_by", 75, "Levels"), ("tiles", 60, "Tiles")]:
             self.game_tilesets_tree.heading(col, text=title)
-            self.game_tilesets_tree.column(col, width=width, stretch=(col == "note"))
+            self.game_tilesets_tree.column(col, width=width, stretch=(col == "file"))
         self.game_tilesets_tree.pack(fill=tk.BOTH, expand=True)
+        self.game_tilesets_tree.bind("<<TreeviewSelect>>", self.on_game_tileset_select)
+
+        self.asset_tileset_canvas = tk.Canvas(right, background="#181818", highlightthickness=0)
+        yscroll = ttk.Scrollbar(right, orient=tk.VERTICAL, command=self.asset_tileset_canvas.yview)
+        xscroll = ttk.Scrollbar(right, orient=tk.HORIZONTAL, command=self.asset_tileset_canvas.xview)
+        self.asset_tileset_canvas.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self.asset_tileset_canvas.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        right.rowconfigure(0, weight=1)
+        right.columnconfigure(0, weight=1)
 
     def _build_game_sprites_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=8)
         self.game_sprites_tab = tab
         self.tabs.add(tab, text="Sprites")
-        ttk.Label(tab, text="MAINCHAR.000 and SPRITES.xxx are external sprite assets. Level-local animations reference sprite frame IDs from these files.", wraplength=430).pack(anchor="w")
         row = ttk.Frame(tab)
-        row.pack(fill=tk.X, pady=(6, 4))
+        row.pack(fill=tk.X, pady=(0, 4))
         ttk.Button(row, text="Refresh", command=self.refresh_game_sprites).pack(side=tk.LEFT)
-        columns = ("file", "scope", "note")
-        self.game_sprites_tree = ttk.Treeview(tab, columns=columns, show="headings", height=18, selectmode="browse")
-        for col, width, title in [("file", 140, "File"), ("scope", 110, "Scope"), ("note", 310, "Note")]:
+        ttk.Label(row, text="Click a SPRITES file to preview a sprite atlas.").pack(side=tk.LEFT, padx=(8, 0))
+
+        body = ttk.PanedWindow(tab, orient=tk.HORIZONTAL)
+        body.pack(fill=tk.BOTH, expand=True)
+        left = ttk.Frame(body)
+        body.add(left, weight=1)
+        right = ttk.Frame(body)
+        body.add(right, weight=3)
+
+        columns = ("file", "scope")
+        self.game_sprites_tree = ttk.Treeview(left, columns=columns, show="headings", height=18, selectmode="browse")
+        for col, width, title in [("file", 140, "File"), ("scope", 120, "Scope")]:
             self.game_sprites_tree.heading(col, text=title)
-            self.game_sprites_tree.column(col, width=width, stretch=(col == "note"))
+            self.game_sprites_tree.column(col, width=width, stretch=(col == "file"))
         self.game_sprites_tree.pack(fill=tk.BOTH, expand=True)
+        self.game_sprites_tree.bind("<<TreeviewSelect>>", self.on_game_sprite_select)
+
+        self.asset_sprite_canvas = tk.Canvas(right, background="#181818", highlightthickness=0)
+        yscroll = ttk.Scrollbar(right, orient=tk.VERTICAL, command=self.asset_sprite_canvas.yview)
+        xscroll = ttk.Scrollbar(right, orient=tk.HORIZONTAL, command=self.asset_sprite_canvas.xview)
+        self.asset_sprite_canvas.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self.asset_sprite_canvas.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        right.rowconfigure(0, weight=1)
+        right.columnconfigure(0, weight=1)
+
+    def _build_game_audio_tab(self) -> None:
+        tab = ttk.Frame(self.tabs, padding=8)
+        self.game_audio_tab = tab
+        self.tabs.add(tab, text="Audio")
+        row = ttk.Frame(tab)
+        row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(row, text="Refresh", command=self.refresh_game_audio).pack(side=tk.LEFT)
+        ttk.Button(row, text="Open selected externally", command=self.open_selected_audio_external).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(row, text="Native playback/export for JJ1 audio formats is a future decoder step.").pack(side=tk.LEFT, padx=(8, 0))
+
+        columns = ("kind", "file", "size")
+        self.game_audio_tree = ttk.Treeview(tab, columns=columns, show="headings", height=22, selectmode="browse")
+        for col, width, title in [("kind", 100, "Kind"), ("file", 220, "File"), ("size", 80, "Bytes")]:
+            self.game_audio_tree.heading(col, text=title)
+            self.game_audio_tree.column(col, width=width, stretch=(col == "file"))
+        self.game_audio_tree.pack(fill=tk.BOTH, expand=True)
+
+
+    def _make_image_atlas(self, images: List[Image.Image], cell: int = 40, columns: int = 12, label_prefix: str = "") -> Image.Image:
+        rows = max(1, (len(images) + columns - 1) // columns)
+        atlas = Image.new("RGBA", (columns * cell, rows * (cell + 12)), (24, 24, 24, 255))
+        draw = ImageDraw.Draw(atlas)
+        for i, img in enumerate(images):
+            x = (i % columns) * cell
+            y = (i // columns) * (cell + 12)
+            draw.rectangle((x, y, x + cell - 1, y + cell - 1), outline=(70, 70, 70, 255))
+            if img is not None:
+                thumb = img.copy().convert("RGBA")
+                thumb.thumbnail((cell - 4, cell - 4), Image.Resampling.NEAREST)
+                atlas.alpha_composite(thumb, (x + (cell - thumb.width)//2, y + (cell - thumb.height)//2))
+            draw.text((x + 2, y + cell), f"{label_prefix}{i}", fill=(230, 230, 230, 255))
+        return atlas
+
+    def on_game_tileset_select(self, _event: tk.Event) -> None:
+        if not hasattr(self, "game_tilesets_tree"):
+            return
+        sel = self.game_tilesets_tree.selection()
+        if not sel:
+            return
+        name = sel[0]
+        try:
+            ts = self.parser.parse_tileset(self.parser.find_file(name))
+            self.render_asset_tileset_atlas(ts)
+        except Exception as exc:
+            messagebox.showerror("Tileset preview failed", str(exc))
+
+    def render_asset_tileset_atlas(self, tileset: TilesetData) -> None:
+        if not hasattr(self, "asset_tileset_canvas"):
+            return
+        scale = 2
+        columns = max(1, (self.asset_tileset_canvas.winfo_width() or 800) // (TILE_SIZE * scale))
+        rows = max(1, (len(tileset.tiles) + columns - 1) // columns)
+        img = Image.new("RGBA", (columns * TILE_SIZE * scale, rows * (TILE_SIZE * scale + 14)), (24, 24, 24, 255))
+        draw = ImageDraw.Draw(img)
+        for i, tile in enumerate(tileset.tiles):
+            x = (i % columns) * TILE_SIZE * scale
+            y = (i // columns) * (TILE_SIZE * scale + 14)
+            tile_img = tile.resize((TILE_SIZE * scale, TILE_SIZE * scale), Image.Resampling.NEAREST)
+            img.alpha_composite(tile_img, (x, y))
+            draw.rectangle((x, y, x + TILE_SIZE * scale - 1, y + TILE_SIZE * scale - 1), outline=(70, 70, 70, 255))
+            draw.text((x + 2, y + TILE_SIZE * scale), str(i), fill=(230, 230, 230, 255))
+        self._asset_photo_refs = [ImageTk.PhotoImage(img)]
+        self.asset_tileset_canvas.delete("all")
+        self.asset_tileset_canvas.create_image(0, 0, image=self._asset_photo_refs[0], anchor="nw")
+        self.asset_tileset_canvas.configure(scrollregion=(0, 0, img.width, img.height))
+
+    def on_game_sprite_select(self, _event: tk.Event) -> None:
+        if not hasattr(self, "game_sprites_tree"):
+            return
+        sel = self.game_sprites_tree.selection()
+        if not sel:
+            return
+        name = sel[0]
+        try:
+            path = self.parser.find_file(name)
+            main = self.parser.find_file("MAINCHAR.000")
+            palette = self.tileset.palette if self.tileset else self.parser.parse_tileset(next(iter(sorted(self.parser.game_dir.glob("BLOCKS.*"))))).palette
+            if name.upper().startswith("MAINCHAR"):
+                # MAINCHAR alone does not have the SPRITES offset table. Show via current level/world if available.
+                if self.level:
+                    sprites = self.parser.load_sprites_for_level(self.level, palette)
+                else:
+                    messagebox.showinfo("MAINCHAR", "MAINCHAR.000 needs a SPRITES.xxx offset table. Select a SPRITES file or open a level first.")
+                    return
+            else:
+                sprites = self.parser.parse_sprites(path, main, palette)
+            if sprites:
+                self.render_asset_sprite_atlas(sprites)
+        except Exception as exc:
+            messagebox.showerror("Sprite preview failed", str(exc))
+
+    def render_asset_sprite_atlas(self, sprites: SpriteSetData) -> None:
+        if not hasattr(self, "asset_sprite_canvas"):
+            return
+        images = [s.image for s in sprites.sprites if s.image.width > 1 or s.image.height > 1]
+        # Keep indices aligned by using the original list; empty frames remain boxes.
+        images = [s.image for s in sprites.sprites[:256]]
+        img = self._make_image_atlas(images, cell=48, columns=max(1, (self.asset_sprite_canvas.winfo_width() or 900)//48), label_prefix="")
+        self._asset_photo_refs = [ImageTk.PhotoImage(img)]
+        self.asset_sprite_canvas.delete("all")
+        self.asset_sprite_canvas.create_image(0, 0, image=self._asset_photo_refs[0], anchor="nw")
+        self.asset_sprite_canvas.configure(scrollregion=(0, 0, img.width, img.height))
+
+    def refresh_game_audio(self) -> None:
+        if not hasattr(self, "game_audio_tree"):
+            return
+        self.game_audio_tree.delete(*self.game_audio_tree.get_children(""))
+        exts = {".PSM": "music", ".S3M": "music", ".MOD": "music", ".WAV": "sound", ".VOC": "sound", ".SND": "sound"}
+        for p in sorted([p for p in self.parser.game_dir.iterdir() if p.is_file()], key=lambda p: p.name.upper()):
+            kind = exts.get(p.suffix.upper())
+            if kind or "SOUND" in p.name.upper() or "MUSIC" in p.name.upper():
+                self.game_audio_tree.insert("", "end", iid=p.name, values=(kind or "resource", p.name, p.stat().st_size))
+
+    def open_selected_audio_external(self) -> None:
+        if not hasattr(self, "game_audio_tree"):
+            return
+        sel = self.game_audio_tree.selection()
+        if not sel:
+            return
+        path = self.parser.game_dir / sel[0]
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(path)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as exc:
+            messagebox.showerror("Open failed", str(exc))
 
     def _classify_game_asset(self, path: Path) -> Tuple[str, str, str]:
         name = path.name.upper()
@@ -1365,6 +1910,7 @@ class LevelEditorApp(tk.Tk):
         self.refresh_game_assets()
         self.refresh_game_tilesets()
         self.refresh_game_sprites()
+        self.refresh_game_audio()
 
     def refresh_game_assets(self) -> None:
         if not hasattr(self, "game_assets_tree"):
@@ -1403,7 +1949,7 @@ class LevelEditorApp(tk.Tk):
             except Exception:
                 pass
             note = "Referenced externally by levels. Editing it is game-global for all levels using this BLOCKS file."
-            self.game_tilesets_tree.insert("", "end", values=(p.name, usage.get(ext, 0), tile_count, note))
+            self.game_tilesets_tree.insert("", "end", iid=p.name, values=(p.name, usage.get(ext, 0), tile_count))
 
     def refresh_game_sprites(self) -> None:
         if not hasattr(self, "game_sprites_tree"):
@@ -1411,11 +1957,11 @@ class LevelEditorApp(tk.Tk):
         self.game_sprites_tree.delete(*self.game_sprites_tree.get_children(""))
         rows = []
         for p in sorted(self.parser.game_dir.glob("MAINCHAR.*"), key=lambda p: p.name.upper()):
-            rows.append((p.name, "GAME GLOBAL", "Shared/main character sprites used by animations."))
+            rows.append((p.name, "shared/main"))
         for p in sorted(self.parser.game_dir.glob("SPRITES.*"), key=lambda p: p.name.upper()):
-            rows.append((p.name, "GAME GLOBAL / world", "World/episode sprite asset. Level-local animations reference frame IDs from it."))
+            rows.append((p.name, "world/episode"))
         for row in rows:
-            self.game_sprites_tree.insert("", "end", values=row)
+            self.game_sprites_tree.insert("", "end", iid=row[0], values=row)
 
 
     def _build_tiles_tab(self) -> None:
@@ -1461,7 +2007,6 @@ class LevelEditorApp(tk.Tk):
         tab = ttk.Frame(self.tabs, padding=8)
         self.objects_tab = tab
         self.tabs.add(tab, text="Object Prefabs")
-        ttk.Label(tab, text="BUILD: place level-local object types as WYSIWYG prefabs. Internally these are event IDs in map cells, but this view is for human object placement.").pack(anchor="w")
         controls = ttk.Frame(tab)
         controls.pack(fill=tk.X, pady=(6, 4))
         ttk.Checkbutton(controls, text="move selected object on next map click", variable=self.move_object_mode).pack(anchor="w")
@@ -1469,18 +2014,17 @@ class LevelEditorApp(tk.Tk):
         filter_row.pack(fill=tk.X, pady=(0, 4))
         ttk.Label(filter_row, text="Category").pack(side=tk.LEFT)
         self.category_combo = ttk.Combobox(filter_row, state="readonly", width=26, textvariable=self.object_category_filter, values=[
-            "all", "pickup/powerup", "enemy/hazard", "trampoline/spring", "mechanism/destructible", "trigger/other"
+            "all", "pickup/powerup", "enemy/hazard", "trampoline/spring", "mechanism/destructible", "trigger/other", "engine marker/collision", "engine marker/foreground", "engine marker/hazard"
         ])
         self.category_combo.pack(side=tk.LEFT, padx=(6, 0))
         self.category_combo.bind("<<ComboboxSelected>>", lambda _e: (self.refresh_object_palette(), self.refresh_objects()))
-        ttk.Button(filter_row, text="Use selected palette event", command=self.use_palette_event).pack(side=tk.LEFT, padx=(6, 0))
         self.object_preview_label = ttk.Label(filter_row, text="preview: -")
         self.object_preview_label.pack(side=tk.LEFT, padx=(10, 0))
         self.object_help_text = tk.Text(tab, height=4, wrap="word")
         self.object_help_text.pack(fill=tk.X, pady=(2, 6))
-        self.object_help_text.insert("1.0", "Select an object/event to see readable behavior notes here.")
+        self.object_help_text.insert("1.0", "")
         self.object_help_text.configure(state="disabled")
-        palette_frame = ttk.LabelFrame(tab, text="Object prefab palette for this level", padding=4)
+        palette_frame = ttk.LabelFrame(tab, text="Palette", padding=4)
         palette_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
         self.palette_tree = ttk.Treeview(palette_frame, columns=("cat", "uses", "name"), show="headings", height=8, selectmode="browse")
         for col, width, text in [("cat", 145, "Category"), ("uses", 45, "Uses"), ("name", 190, "Event / Name")]:
@@ -1492,7 +2036,7 @@ class LevelEditorApp(tk.Tk):
         buttons.pack(fill=tk.X, pady=(0, 6))
         ttk.Button(buttons, text="Refresh list", command=self.refresh_objects).pack(side=tk.LEFT)
         ttk.Button(buttons, text="Delete", command=self.delete_selected_object).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(buttons, text="Duplicate brush", command=self.duplicate_selected_object_to_brush).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(buttons, text="Use selected as brush", command=self.duplicate_selected_object_to_brush).pack(side=tk.LEFT, padx=(6, 0))
 
         columns = ("event", "name", "x", "y", "tile", "bg")
         self.object_tree = ttk.Treeview(tab, columns=columns, show="headings", height=16, selectmode="browse")
@@ -1512,19 +2056,13 @@ class LevelEditorApp(tk.Tk):
         tab = ttk.Frame(self.tabs, padding=8)
         self.object_types_tab = tab
         self.tabs.add(tab, text="Object Types")
-        ttk.Label(
-            tab,
-            text="WYSIWYG object type workflow. Event IDs are level-local shared definitions. Duplicate a type when you want one placed object to behave differently without changing every copy in the level.",
-            wraplength=380,
-        ).pack(anchor="w")
         row = ttk.Frame(tab)
         row.pack(fill=tk.X, pady=(6, 4))
         ttk.Button(row, text="Refresh", command=self.refresh_object_types).pack(side=tk.LEFT)
-        ttk.Button(row, text="Back to BUILD", command=lambda: self.workspace_tabs.select(self.build_workspace)).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(row, text="Use as brush", command=self.use_object_type_as_brush).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(row, text="Highlight type", command=self.highlight_selected_object_type).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(row, text="Clear highlight", command=lambda: (self.highlight_event_id.set(0), self.render_map())).pack(side=tk.LEFT, padx=(6, 0))
-        actions = ttk.LabelFrame(tab, text="Safe object-type actions", padding=6)
+        actions = ttk.LabelFrame(tab, text="Actions", padding=6)
         actions.pack(fill=tk.X, pady=(0, 6))
         ttk.Button(actions, text="Duplicate selected placement into new type", command=self.duplicate_selected_object_definition).pack(fill=tk.X, pady=2)
         ttk.Button(actions, text="Replace selected placement with current brush", command=self.replace_selected_object_with_brush).pack(fill=tk.X, pady=2)
@@ -1543,7 +2081,6 @@ class LevelEditorApp(tk.Tk):
         tab = ttk.Frame(self.tabs, padding=8)
         self.layers_tab = tab
         self.tabs.add(tab, text="Layers")
-        ttk.Label(tab, text="WYSIWYG map layers. Visibility controls what you see; locks prevent accidental editing in that layer.", wraplength=380).pack(anchor="w")
         grid = ttk.Frame(tab)
         grid.pack(fill=tk.X, pady=(8, 0))
         rows = [
@@ -1563,15 +2100,12 @@ class LevelEditorApp(tk.Tk):
             ttk.Checkbutton(grid, text=visible_text, variable=visible, command=self.render_map).grid(row=r, column=1, sticky="w", padx=(8, 0))
             if locked is not None:
                 ttk.Checkbutton(grid, text=locked_text, variable=locked).grid(row=r, column=2, sticky="w", padx=(8, 0))
-        ttk.Separator(tab).pack(fill=tk.X, pady=8)
-        ttk.Label(tab, text="Recommended WYSIWYG mode: keep Object sprites + Collision + Start visible, edit in Objects mode, and use raw Events only for diagnostics.", wraplength=380).pack(anchor="w")
 
 
     def _build_metadata_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=8)
         self.metadata_tab = tab
         self.tabs.add(tab, text="Level / Start")
-        ttk.Label(tab, text="Player start is stored as level metadata, not as a grid event. This tab is saved together with grid edits.").pack(anchor="w")
         grid = ttk.Frame(tab)
         grid.pack(anchor="w", pady=(8, 0))
         self.start_x_var = tk.IntVar(value=0)
@@ -1664,31 +2198,516 @@ class LevelEditorApp(tk.Tk):
         self.mask_text = tk.Text(tab, height=18, wrap="none")
         self.mask_text.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
+    def event_def_selector_values(self) -> List[str]:
+        if not self.level:
+            return []
+        counts = self.event_usage_counts()
+        values = []
+        for event_id in range(EVENTS):
+            ev = self.level.event_def(event_id)
+            used = counts.get(event_id, 0)
+            if event_id == 0:
+                label = "Empty / erase"
+            elif not any(ev.raw) and not ev.name and used == 0:
+                label = "Unused"
+            else:
+                label = friendly_event_name(ev)
+            values.append(f"{event_id:03d}  {label}  ({used}×)")
+        return values
+
+    def refresh_event_def_selector(self) -> None:
+        if hasattr(self, "event_def_combo"):
+            values = self.event_def_selector_values()
+            self.event_def_combo["values"] = values
+            eid = max(0, min(126, int(getattr(self, "_editing_event_id", 0))))
+            if values:
+                self.event_def_combo.current(eid)
+
+    def on_event_def_combo_select(self, _event: tk.Event = None) -> None:
+        if not hasattr(self, "event_def_combo"):
+            return
+        idx = self.event_def_combo.current()
+        if idx >= 0:
+            self.select_event_definition(idx)
+
+    def select_event_definition(self, event_id: int) -> None:
+        event_id = max(0, min(126, int(event_id)))
+        self._editing_event_id = event_id
+        self.current_event.set(event_id)
+        if hasattr(self, "event_def_combo"):
+            vals = self.event_def_combo["values"]
+            if vals:
+                self.event_def_combo.current(event_id)
+        self.render_event_definition(event_id)
+
+    def create_new_object_type(self) -> None:
+        if not self.level:
+            return
+        used = self.event_usage_counts()
+        event_id = self.find_free_event_id()
+        raw = bytearray(ELENGTH)
+        self.level.event_types[event_id] = bytes(raw)
+        self.set_dirty(True)
+        self.refresh_event_def_selector()
+        self.select_event_definition(event_id)
+        self.status.set(f"Created new object type in free Event {event_id:03d}.")
+
+    def duplicate_event_definition_as_new(self) -> None:
+        if not self.level:
+            return
+        src_id = max(0, min(126, int(getattr(self, "_editing_event_id", self.current_event.get()))))
+        if src_id == 0:
+            self.status.set("Cannot duplicate empty event 0.")
+            return
+        if is_reserved_engine_event(src_id):
+            self.status.set(f"Event {src_id} is a reserved engine marker; duplicate its placement, not its definition.")
+            return
+        dst_id = self.find_free_event_id()
+        self.level.event_types[dst_id] = bytes(self.level.event_types[src_id])
+        if dst_id < len(self.level.event_names):
+            base_name = self.level.event_names[src_id] if src_id < len(self.level.event_names) else ""
+            self.level.event_names[dst_id] = (base_name + " copy").strip()[:32] if base_name else ""
+        self.set_dirty(True)
+        self.refresh_event_def_selector()
+        self.select_event_definition(dst_id)
+        self.status.set(f"Duplicated Event {src_id:03d} as new Event {dst_id:03d}.")
+
+    def apply_concept_template_to_raw(self, raw: bytearray, concept: str) -> None:
+        # Keep animations/sound/score unless the concept needs a known behavior field.
+        if concept == "Unused / empty":
+            raw[:] = bytes(ELENGTH)
+            return
+        if concept == "Enemy / hazard":
+            raw[10] = 0
+            raw[9] = max(1, raw[9])
+            raw[11] = max(1, raw[11])
+            if raw[4] == 0:
+                raw[4] = 4
+        elif concept == "Touch pickup / item":
+            raw[9] = 0
+            if raw[10] not in PICKUP_MODIFIER_MEANINGS:
+                raw[10] = _first_modifier_for_pickup()
+            raw[11] = max(1, raw[11])
+        elif concept == "Shootable pickup / container":
+            raw[9] = max(1, raw[9])
+            if raw[10] not in PICKUP_MODIFIER_MEANINGS:
+                raw[10] = 15
+            raw[11] = max(1, raw[11])
+        elif concept == "Destructible block":
+            raw[4] = 21
+            raw[10] = 7
+            raw[9] = max(1, raw[9])
+        elif concept == "Spring / bounce":
+            raw[10] = 29
+            raw[9] = 0
+            raw[8] = raw[8] or 250
+        elif concept == "Warp trigger":
+            raw[10] = 13
+            raw[9] = 0
+        elif concept == "Conveyor belt":
+            raw[10] = 28
+            raw[9] = 0
+            raw[8] = raw[8] or 2
+        elif concept == "Path-moving object":
+            raw[4] = 6
+            raw[22] = min(15, raw[22])
+        # Reserved markers are numeric IDs, not a cloneable raw template.
+
+    def rebuild_event_concept_editor(self, event_id: int, raw: bytes) -> None:
+        if not hasattr(self, "event_concept_frame"):
+            return
+        for child in self.event_concept_frame.winfo_children():
+            child.destroy()
+        self.event_concept_vars = {}
+        name = self.level.event_names[event_id] if self.level and event_id < len(self.level.event_names) else ""
+        inferred = infer_event_concept(event_id, raw, name)
+        concept = inferred
+        if hasattr(self, "event_concept_var"):
+            current = self.event_concept_var.get()
+            if current in EVENT_CONCEPTS and current not in {"Auto / keep current"}:
+                concept = current
+            else:
+                self.event_concept_var.set(inferred)
+        if concept == "Auto / keep current":
+            concept = inferred
+
+        def add_spin(row: int, key: str, label: str, value: int, frm: int = 0, to: int = 255, hint: str = "") -> int:
+            ttk.Label(self.event_concept_frame, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
+            var = tk.IntVar(value=int(value))
+            self.event_concept_vars[key] = var
+            field = ttk.Frame(self.event_concept_frame)
+            field.grid(row=row, column=1, sticky="w", pady=2)
+            ttk.Spinbox(field, from_=frm, to=to, width=8, textvariable=var).pack(side=tk.LEFT)
+            if key in {"left_anim", "right_anim", "finish_left", "finish_right", "shoot_left", "shoot_right"}:
+                ttk.Button(field, text="Atlas…", command=lambda k=key: self.open_animation_picker_for(k)).pack(side=tk.LEFT, padx=(4, 0))
+            if key == "bullet":
+                ttk.Button(field, text="Pick…", command=lambda k=key: self.open_bullet_picker_for(k)).pack(side=tk.LEFT, padx=(4, 0))
+            if hint:
+                ttk.Label(self.event_concept_frame, text=hint).grid(row=row, column=2, sticky="w", padx=(8, 0), pady=2)
+            return row + 1
+
+        def add_combo(row: int, key: str, label: str, values: List[str], current: str) -> int:
+            ttk.Label(self.event_concept_frame, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
+            var = tk.StringVar(value=current)
+            self.event_concept_vars[key] = var
+            cb = ttk.Combobox(self.event_concept_frame, state="readonly", values=values, textvariable=var, width=34)
+            cb.grid(row=row, column=1, columnspan=2, sticky="ew", pady=2)
+            return row + 1
+
+        def add_check(row: int, key: str, label: str, value: bool) -> int:
+            var = tk.BooleanVar(value=bool(value))
+            self.event_concept_vars[key] = var
+            ttk.Checkbutton(self.event_concept_frame, text=label, variable=var).grid(row=row, column=0, columnspan=3, sticky="w", pady=2)
+            return row + 1
+
+        row = 0
+        if concept == "Unused / empty":
+            ttk.Label(self.event_concept_frame, text="This event definition is currently unused/empty.", wraplength=420).grid(row=row, column=0, columnspan=3, sticky="w", pady=4)
+            row += 1
+            ttk.Label(self.event_concept_frame, text="Choose a concept above to turn it into a normal object type, then click Apply.", wraplength=420).grid(row=row, column=0, columnspan=3, sticky="w", pady=4)
+            return
+        if is_reserved_engine_event(event_id):
+            info = RESERVED_ENGINE_EVENTS[event_id]
+            ttk.Label(self.event_concept_frame, text=info["summary"], wraplength=420).grid(row=row, column=0, columnspan=3, sticky="w", pady=4)
+            row += 1
+            ttk.Label(self.event_concept_frame, text="This is edited by placing this exact event ID in the map. Its core behavior is not made by these fields.", wraplength=420).grid(row=row, column=0, columnspan=3, sticky="w", pady=4)
+            return
+
+        common_anims = [(5, "left_anim"), (6, "right_anim"), (28, "finish_left"), (29, "finish_right"), (30, "shoot_left"), (31, "shoot_right")]
+        if concept == "Unused / empty":
+            raw[:] = bytes(ELENGTH)
+            return
+        if concept in {"Touch pickup / item", "Shootable pickup / container"}:
+            cur = f"{raw[10]}: {PICKUP_MODIFIER_MEANINGS.get(raw[10], (f'modifier_{raw[10]}', ''))[0]}"
+            if raw[10] not in PICKUP_MODIFIER_MEANINGS:
+                cur = PICKUP_COMBO_LABELS[0]
+            row = add_combo(row, "pickup_modifier", "Pickup / reward effect", PICKUP_COMBO_LABELS, cur)
+            row = add_check(row, "shootable", "Requires shooting / destroying before pickup", raw[9] > 0)
+            row = add_spin(row, "strength", "Hits / strength", max(1, raw[9]) if raw[9] else 1, 0, 255)
+            row = add_spin(row, "points", "Score points ×10", raw[11], 0, 255)
+            row = add_spin(row, "sound", "Pickup sound", raw[21], 0, 255)
+        elif concept == "Enemy / hazard":
+            row = add_combo(row, "movement", "Movement behavior", [f"{k}: {v[0]}" for k, v in sorted(MOVEMENT_FIELD_MEANINGS.items())], f"{raw[4]}: {movement_meaning_detail(raw[4])[0]}")
+            row = add_spin(row, "strength", "Health / hits to kill", raw[9] or 1, 1, 255)
+            row = add_spin(row, "points", "Kill score points ×10", raw[11], 0, 255)
+            row = add_spin(row, "bullet", "Bullet type", raw[12], 0, 31)
+            row = add_spin(row, "bullet_period", "Bullet period", raw[13], 0, 255)
+            row = add_spin(row, "speed", "Movement speed divisor", raw[15] + 1, 1, 256)
+        elif concept == "Destructible block":
+            row = add_spin(row, "strength", "Hits required", raw[9] or 1, 1, 255)
+            row = add_spin(row, "destroy_tile", "Tile after destroyed (multiA)", raw[22], 0, 255)
+            row = add_spin(row, "piece_size", "Debris piece size", raw[24], 0, 255)
+            row = add_spin(row, "pieces", "Debris pieces", raw[25], 0, 255)
+            row = add_spin(row, "sound", "Destroy sound", raw[21], 0, 255)
+        elif concept == "Spring / bounce":
+            row = add_spin(row, "magnitude_signed", "Bounce magnitude (signed)", _signed_byte(raw[8]), -128, 127)
+            row = add_spin(row, "sound", "Spring sound", raw[21], 0, 255)
+        elif concept == "Warp trigger":
+            row = add_spin(row, "warp_x", "Target X tile", raw[22], 0, 255)
+            row = add_spin(row, "warp_y", "Target Y tile", raw[23], 0, 255)
+            row = add_spin(row, "sound", "Sound", raw[21], 0, 255)
+        elif concept == "Conveyor belt":
+            row = add_spin(row, "magnitude_signed", "Push magnitude (signed)", _signed_byte(raw[8]), -128, 127)
+            row = add_spin(row, "sound", "Sound", raw[21], 0, 255)
+        elif concept == "Path-moving object":
+            row = add_spin(row, "path_index", "Path index (multiA)", raw[22], 0, 15)
+            row = add_combo(row, "movement", "Path movement mode", ["6: Use level path", "7: Flying snake / path"], f"{raw[4]}: {movement_meaning_detail(raw[4])[0]}")
+            row = add_spin(row, "strength", "Health / strength", raw[9], 0, 255)
+        else:
+            row = add_combo(row, "movement", "Movement behavior", [f"{k}: {v[0]}" for k, v in sorted(MOVEMENT_FIELD_MEANINGS.items())], f"{raw[4]}: {movement_meaning_detail(raw[4])[0]}")
+            row = add_combo(row, "modifier", "Modifier / touch behavior", [f"{k}: {v[0]}" for k, v in sorted(MODIFIER_TOUCH_MEANINGS.items())], f"{raw[10]}: {modifier_meaning(raw[10])[0]}")
+            row = add_spin(row, "strength", "Strength / health / hits", raw[9], 0, 255)
+            row = add_spin(row, "points", "Score points ×10", raw[11], 0, 255)
+            row = add_spin(row, "magnitude", "Magnitude", raw[8], 0, 255)
+            row = add_spin(row, "multi_a", "multiA", raw[22], 0, 255)
+            row = add_spin(row, "multi_b", "multiB", raw[23], 0, 255)
+
+        # Visuals are useful for all normal object types.
+        row += 1
+        ttk.Label(self.event_concept_frame, text="Visuals").grid(row=row, column=0, sticky="w", pady=(8, 2))
+        row += 1
+        for idx, key in common_anims:
+            row = add_spin(row, key, event_field_label_for(raw, idx), raw[idx], 0, 127)
+        row = add_spin(row, "anim_speed", "Animation speed", raw[17] + 1, 1, 256)
+
+    def open_bullet_picker_for(self, key: str) -> None:
+        win = tk.Toplevel(self)
+        win.title("Choose bullet type")
+        win.geometry("520x360")
+        columns = ("id", "meaning")
+        tree = ttk.Treeview(win, columns=columns, show="headings", selectmode="browse")
+        tree.heading("id", text="ID")
+        tree.heading("meaning", text="Meaning")
+        tree.column("id", width=50, stretch=False)
+        tree.column("meaning", width=430, stretch=True)
+        tree.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        for i in range(32):
+            tree.insert("", "end", iid=str(i), values=(i, bullet_type_label(i)))
+        def choose(_event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            var = self.event_concept_vars.get(key)
+            if var is not None:
+                var.set(int(sel[0]))
+            win.destroy()
+        ttk.Button(win, text="Use selected", command=choose).pack(pady=(0, 8))
+        tree.bind("<Double-1>", choose)
+
+    def open_animation_picker_for(self, key: str) -> None:
+        if not self.level:
+            return
+        win = tk.Toplevel(self)
+        win.title(f"Choose animation for {key}")
+        win.geometry("900x640")
+
+        top = ttk.Frame(win, padding=(8, 8, 8, 4))
+        top.pack(fill=tk.X)
+        ttk.Label(top, text="Click any animation tile to select it. Hover highlights the whole tile.").pack(side=tk.LEFT)
+
+        frame = ttk.Frame(win)
+        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        canvas = tk.Canvas(frame, background="#181818", highlightthickness=0)
+        yscroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
+        xscroll = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=canvas.xview)
+        canvas.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        refs: List[ImageTk.PhotoImage] = []
+        cell_w = 110
+        cell_h = 96
+        cols = 8
+        used = set()
+        for ev in self.level.event_catalog()[1:]:
+            for idx in [5, 6, 28, 29, 30, 31]:
+                if idx < len(ev.raw) and ev.raw[idx]:
+                    used.add(ev.raw[idx] & 0x7F)
+
+        visible_anims = [
+            anim for anim in self.level.animations
+            if anim.length > 0 or anim.anim_id in used or anim.name
+        ]
+
+        hovered = {"tag": None}
+
+        def set_hover(tag: str, on: bool) -> None:
+            if on:
+                hovered["tag"] = tag
+                canvas.itemconfigure(f"{tag}_bg", fill="#303030", outline="#ffff00", width=3)
+                canvas.config(cursor="hand2")
+            else:
+                if hovered.get("tag") == tag:
+                    hovered["tag"] = None
+                canvas.itemconfigure(f"{tag}_bg", fill="#202020", outline="#555555", width=1)
+                canvas.config(cursor="")
+
+        def choose_anim(anim_id: int) -> None:
+            var = self.event_concept_vars.get(key)
+            if var is not None:
+                var.set(anim_id)
+            win.destroy()
+
+        for pos, anim in enumerate(visible_anims):
+            i = anim.anim_id
+            col = pos % cols
+            row = pos // cols
+            x = col * cell_w
+            y = row * cell_h
+            tag = f"anim_pick_{i}"
+
+            # Filled background is intentionally visible and receives mouse events across the whole tile.
+            canvas.create_rectangle(
+                x + 3, y + 3, x + cell_w - 3, y + cell_h - 3,
+                fill="#202020", outline="#555555", width=1,
+                tags=(tag, f"{tag}_bg"),
+            )
+            canvas.create_text(x + 8, y + 8, text=f"A{i}", fill="#ffff80", anchor="nw", tags=(tag,))
+            title = anim.name[:16] if anim.name else ("used" if i in used else "")
+            if title:
+                canvas.create_text(x + 40, y + 8, text=title, fill="#dddddd", anchor="nw", tags=(tag,))
+
+            if self.spriteset and anim.frame_ids:
+                for n, frame_id in enumerate(anim.frame_ids[:4]):
+                    frame_img = self.spriteset.get(frame_id)
+                    if frame_img:
+                        img = frame_img.image.copy()
+                        img.thumbnail((30, 30), Image.Resampling.NEAREST)
+                        photo = ImageTk.PhotoImage(img)
+                        refs.append(photo)
+                        canvas.create_image(x + 20 + n * 22, y + 48, image=photo, anchor="center", tags=(tag,))
+                canvas.create_text(x + 8, y + 72, text=",".join(map(str, anim.frame_ids[:6])), fill="#a8a8a8", anchor="nw", tags=(tag,))
+            else:
+                canvas.create_text(x + 8, y + 45, text="no frames", fill="#777777", anchor="nw", tags=(tag,))
+
+            canvas.tag_bind(tag, "<Enter>", lambda _e, t=tag: set_hover(t, True))
+            canvas.tag_bind(tag, "<Leave>", lambda _e, t=tag: set_hover(t, False))
+            canvas.tag_bind(tag, "<Button-1>", lambda _e, anim_id=i: choose_anim(anim_id))
+            canvas.tag_bind(tag, "<Double-1>", lambda _e, anim_id=i: choose_anim(anim_id))
+
+        rows = max(1, (len(visible_anims) + cols - 1) // cols)
+        canvas.configure(scrollregion=(0, 0, cols * cell_w, rows * cell_h))
+        win._photo_refs = refs  # keep image references alive
+
+    def apply_event_concept_to_raw(self, raw: bytearray, concept: str) -> None:
+        self.apply_concept_template_to_raw(raw, concept)
+        vars = getattr(self, "event_concept_vars", {})
+        def get_int(key, default=0):
+            var = vars.get(key)
+            if var is None:
+                return default
+            try:
+                return int(var.get())
+            except Exception:
+                return default
+        def get_bool(key, default=False):
+            var = vars.get(key)
+            if var is None:
+                return default
+            return bool(var.get())
+        def combo_num(key, default=0):
+            var = vars.get(key)
+            if var is None:
+                return default
+            try:
+                return int(str(var.get()).split(":", 1)[0])
+            except Exception:
+                return default
+
+        if concept == "Unused / empty":
+            raw[:] = bytes(ELENGTH)
+            return
+        if concept in {"Touch pickup / item", "Shootable pickup / container"}:
+            raw[10] = combo_num("pickup_modifier", raw[10])
+            shootable = get_bool("shootable", concept == "Shootable pickup / container")
+            raw[9] = max(1, get_int("strength", raw[9] or 1)) if shootable else 0
+            raw[11] = get_int("points", raw[11])
+            raw[21] = get_int("sound", raw[21])
+        elif concept == "Enemy / hazard":
+            raw[10] = 0
+            raw[4] = combo_num("movement", raw[4])
+            raw[9] = max(1, get_int("strength", raw[9] or 1))
+            raw[11] = get_int("points", raw[11])
+            raw[12] = max(0, min(31, get_int("bullet", raw[12])))
+            raw[13] = get_int("bullet_period", raw[13])
+            raw[15] = max(0, min(255, get_int("speed", raw[15] + 1) - 1))
+        elif concept == "Destructible block":
+            raw[4] = 21
+            raw[10] = 7
+            raw[9] = max(1, get_int("strength", raw[9] or 1))
+            raw[22] = get_int("destroy_tile", raw[22])
+            raw[24] = get_int("piece_size", raw[24])
+            raw[25] = get_int("pieces", raw[25])
+            raw[21] = get_int("sound", raw[21])
+        elif concept == "Spring / bounce":
+            raw[10] = 29
+            raw[9] = 0
+            raw[8] = get_int("magnitude_signed", _signed_byte(raw[8])) & 0xFF
+            raw[21] = get_int("sound", raw[21])
+        elif concept == "Warp trigger":
+            raw[10] = 13
+            raw[9] = 0
+            raw[22] = get_int("warp_x", raw[22])
+            raw[23] = get_int("warp_y", raw[23])
+            raw[21] = get_int("sound", raw[21])
+        elif concept == "Conveyor belt":
+            raw[10] = 28
+            raw[9] = 0
+            raw[8] = get_int("magnitude_signed", _signed_byte(raw[8])) & 0xFF
+            raw[21] = get_int("sound", raw[21])
+        elif concept == "Path-moving object":
+            raw[4] = combo_num("movement", raw[4])
+            raw[22] = max(0, min(15, get_int("path_index", raw[22])))
+            raw[9] = get_int("strength", raw[9])
+        elif concept == "Raw / advanced":
+            raw[4] = combo_num("movement", raw[4])
+            raw[10] = combo_num("modifier", raw[10])
+            raw[9] = get_int("strength", raw[9])
+            raw[11] = get_int("points", raw[11])
+            raw[8] = get_int("magnitude", raw[8])
+            raw[22] = get_int("multi_a", raw[22])
+            raw[23] = get_int("multi_b", raw[23])
+
+        # Visual fields.
+        for key, idx in [("left_anim", 5), ("right_anim", 6), ("finish_left", 28), ("finish_right", 29), ("shoot_left", 30), ("shoot_right", 31)]:
+            if key in vars:
+                raw[idx] = max(0, min(127, get_int(key, raw[idx])))
+        if "anim_speed" in vars:
+            raw[17] = max(0, min(255, get_int("anim_speed", raw[17] + 1) - 1))
+
     def _build_event_defs_tab(self) -> None:
-        tab = ttk.Frame(self.tabs, padding=8)
-        self.tabs.add(tab, text="Event defs")
-        self.global_event_defs_tab = tab
-        ttk.Label(tab, text="Structured editor for the selected event definition. Event definitions are shared by all placements of the same event ID.").pack(anchor="w")
-        self.event_def_title = ttk.Label(tab, text="Event: -")
-        self.event_def_title.pack(anchor="w", pady=(6, 4))
-        warn = ttk.Frame(tab)
-        warn.pack(fill=tk.X, pady=(0, 4))
-        ttk.Checkbutton(warn, text="Save modified level-local event definitions (affects all placements of edited event IDs)", variable=self.save_event_defs_var).pack(anchor="w")
-        editor = ttk.LabelFrame(tab, text="Safe structured fields", padding=4)
-        editor.pack(fill=tk.X, pady=(0, 6))
+        # This method builds the EVENT DEFS workspace. It has two internal tabs:
+        # a concept editor for normal work and a raw/interpretation view for diagnostics.
+        concept_tab = ttk.Frame(self.tabs, padding=8)
+        raw_tab = ttk.Frame(self.tabs, padding=8)
+        self.event_concept_tab = concept_tab
+        self.event_raw_tab = raw_tab
+        self.global_event_defs_tab = concept_tab
+        self.tabs.add(concept_tab, text="Concept editor")
+        self.tabs.add(raw_tab, text="Raw / interpretation")
+
+        selector = ttk.Frame(concept_tab)
+        selector.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(selector, text="Event").pack(side=tk.LEFT)
+        self.event_def_combo = ttk.Combobox(selector, state="readonly", width=46)
+        self.event_def_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
+        self.event_def_combo.bind("<<ComboboxSelected>>", self.on_event_def_combo_select)
+        ttk.Button(selector, text="New type", command=self.create_new_object_type).pack(side=tk.LEFT)
+        ttk.Button(selector, text="Duplicate as new", command=self.duplicate_event_definition_as_new).pack(side=tk.LEFT, padx=(6, 0))
+
+        concept_row = ttk.Frame(concept_tab)
+        concept_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(concept_row, text="Concept").pack(side=tk.LEFT)
+        self.event_concept_var = tk.StringVar(value="Unused / empty")
+        self.event_concept_combo = ttk.Combobox(concept_row, state="readonly", values=EVENT_CONCEPTS, textvariable=self.event_concept_var, width=32)
+        self.event_concept_combo.pack(side=tk.LEFT, padx=(6, 6))
+        self.event_concept_combo.bind("<<ComboboxSelected>>", self.on_event_concept_changed)
+        ttk.Button(concept_row, text="Apply", command=self.apply_event_definition_from_ui).pack(side=tk.LEFT)
+        ttk.Button(concept_row, text="Refresh", command=lambda: self.render_event_definition(self._editing_event_id)).pack(side=tk.LEFT, padx=(6, 0))
+
+        self.event_concept_frame = ttk.LabelFrame(concept_tab, text="Object concept", padding=6)
+        self.event_concept_frame.pack(fill=tk.BOTH, expand=True)
+        self.event_concept_vars: Dict[str, Any] = {}
+
+        raw_selector = ttk.Frame(raw_tab)
+        raw_selector.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(raw_selector, text="Same selected event as Concept editor").pack(side=tk.LEFT)
+        ttk.Button(raw_selector, text="Refresh", command=lambda: self.render_event_definition(self._editing_event_id)).pack(side=tk.LEFT, padx=(8, 0))
+
+        body = ttk.PanedWindow(raw_tab, orient=tk.VERTICAL)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        interp_frame = ttk.LabelFrame(body, text="Interpretation")
+        body.add(interp_frame, weight=1)
+        self.event_semantic_text = tk.Text(interp_frame, height=8, wrap="word")
+        self.event_semantic_text.pack(fill=tk.BOTH, expand=True)
+
+        raw_frame = ttk.LabelFrame(body, text="Raw editor")
+        body.add(raw_frame, weight=1)
+        self.event_raw_fields_frame = ttk.Frame(raw_frame)
+        self.event_raw_fields_frame.pack(fill=tk.X, pady=(4, 4))
         self.event_def_edit_vars: Dict[int, tk.IntVar] = {}
-        fields = [(4, "movement"), (5, "left anim"), (6, "right anim"), (8, "magnitude"), (9, "strength"), (10, "modifier"), (11, "points"), (12, "bullet"), (13, "bullet period"), (15, "speed-1"), (17, "anim speed-1"), (21, "sound"), (22, "multi A"), (23, "multi B"), (28, "finish L"), (29, "finish R"), (30, "shoot L"), (31, "shoot R")]
-        for n, (idx, label) in enumerate(fields):
+        self.event_def_field_labels: Dict[int, ttk.Label] = {}
+        for n, idx in enumerate(EDITABLE_EVENT_FIELD_INDICES):
             var = tk.IntVar(value=0)
             self.event_def_edit_vars[idx] = var
-            ttk.Label(editor, text=label).grid(row=n // 3, column=(n % 3) * 2, sticky="w", padx=(0, 4), pady=1)
-            ttk.Spinbox(editor, from_=0, to=255, width=6, textvariable=var).grid(row=n // 3, column=(n % 3) * 2 + 1, sticky="w", padx=(0, 10), pady=1)
-        buttons = ttk.Frame(tab)
-        buttons.pack(fill=tk.X, pady=(0, 6))
-        ttk.Button(buttons, text="Apply edited definition in memory", command=self.apply_event_definition_from_ui).pack(side=tk.LEFT)
-        ttk.Button(buttons, text="Refresh selected definition", command=lambda: self.render_event_definition(self._editing_event_id)).pack(side=tk.LEFT, padx=(6, 0))
-        self.event_def_text = tk.Text(tab, height=16, wrap="none")
+            label = ttk.Label(self.event_raw_fields_frame, text=EVENT_FIELD_NAMES[idx])
+            self.event_def_field_labels[idx] = label
+            label.grid(row=n // 3, column=(n % 3) * 2, sticky="w", padx=(0, 4), pady=1)
+            ttk.Spinbox(self.event_raw_fields_frame, from_=0, to=255, width=6, textvariable=var).grid(row=n // 3, column=(n % 3) * 2 + 1, sticky="w", padx=(0, 10), pady=1)
+        ttk.Button(raw_frame, text="Apply raw fields", command=self.apply_event_definition_from_ui).pack(anchor="w", pady=(4, 4))
+        self.event_def_text = tk.Text(raw_frame, height=8, wrap="none")
         self.event_def_text.pack(fill=tk.BOTH, expand=True)
+
+    def on_event_concept_changed(self, _event: tk.Event = None) -> None:
+        if not self.level:
+            return
+        event_id = max(0, min(126, int(self._editing_event_id)))
+        self.rebuild_event_concept_editor(event_id, self.level.event_types[event_id])
 
     def _build_animations_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=8)
@@ -1766,12 +2785,47 @@ class LevelEditorApp(tk.Tk):
             self.level_combo.current(0)
             self.load_selected_level()
 
+    def set_dirty(self, dirty: bool = True) -> None:
+        self.dirty = bool(dirty)
+        if self.level:
+            mark = "*" if self.dirty else ""
+            save_path = self.current_save_path.name if self.current_save_path else self.level.path.name
+            self.title(f"Jazz Jackrabbit 1 DOS Data Level Editor v23{mark} - {save_path}")
+        else:
+            self.title("Jazz Jackrabbit 1 DOS Data Level Editor v23")
+
+    def maybe_save_changes(self, action: str = "continue") -> bool:
+        if not self.dirty or not self.level:
+            return True
+        answer = messagebox.askyesnocancel(
+            "Unsaved changes",
+            f"{self.level.path.name} has unsaved changes.\n\nSave before {action}?"
+        )
+        if answer is None:
+            return False
+        if answer:
+            return self.save()
+        return True
+
+    def on_close(self) -> None:
+        if self.maybe_save_changes("closing"):
+            self.destroy()
+
     def open_game_dir(self) -> None:
+        if not self.maybe_save_changes("opening another game directory"):
+            return
         selected = filedialog.askdirectory(title="Select Jazz Jackrabbit DOS game directory")
         if not selected:
             return
         self.parser = JJ1Parser(Path(selected))
         self._load_level_list()
+
+    def request_load_selected_level(self) -> None:
+        if self.maybe_save_changes("loading another level"):
+            self.load_selected_level()
+        else:
+            if self.level and self.level.path in self.level_paths:
+                self.level_combo.current(self.level_paths.index(self.level.path))
 
     def load_selected_level(self) -> None:
         idx = self.level_combo.current()
@@ -1791,6 +2845,8 @@ class LevelEditorApp(tk.Tk):
         self.move_object_mode.set(False)
         self.undo_stack.clear()
         self.redo_stack.clear()
+        self.current_save_path = self.level.path
+        self.set_dirty(False)
         self._event_preview_cache.clear()
         self._object_icon_photos.clear()
         self.status.set(
@@ -1799,6 +2855,7 @@ class LevelEditorApp(tk.Tk):
             f"sprites={len(self.spriteset.sprites) if self.spriteset else 0}"
         )
         self.populate_events()
+        self.refresh_event_def_selector()
         self.refresh_object_palette()
         self.refresh_objects()
         self.refresh_object_types()
@@ -1813,7 +2870,8 @@ class LevelEditorApp(tk.Tk):
         self.render_map()
 
     def reload_current(self) -> None:
-        self.load_selected_level()
+        if self.maybe_save_changes("reloading"):
+            self.load_selected_level()
 
     def _mode_changed(self) -> None:
         mode = self.tool_mode.get()
@@ -1896,6 +2954,17 @@ class LevelEditorApp(tk.Tk):
         photo = ImageTk.PhotoImage(canvas)
         self._object_icon_photos[event_id] = photo
         return photo
+
+    def show_reserved_markers_help(self) -> None:
+        lines = ["Reserved engine marker events:", ""]
+        for event_id in sorted(RESERVED_ENGINE_EVENTS):
+            info = RESERVED_ENGINE_EVENTS[event_id]
+            lines.append(f"{event_id}: {info['name']}")
+            lines.append(f"    {info['summary']}")
+            lines.append("")
+        lines.append(f"Normal event definitions are safest in range 1..{NORMAL_EDITABLE_EVENT_MAX}.")
+        lines.append("Events 122..126 are reserved engine/render/collision markers and should be edited as marker placements, not duplicated as normal object types.")
+        messagebox.showinfo("Reserved engine marker events", "\n".join(lines))
 
     def refresh_object_palette(self) -> None:
         if not hasattr(self, "palette_tree"):
@@ -2026,11 +3095,11 @@ class LevelEditorApp(tk.Tk):
         if not self.level:
             return None
         used = set(self.event_usage_counts())
-        for i in range(1, EVENTS):
+        for i in range(1, NORMAL_EDITABLE_EVENT_MAX + 1):
             raw = self.level.event_types[i]
             if i not in used and not self.level.event_names[i] and not any(raw):
                 return i
-        for i in range(1, EVENTS):
+        for i in range(1, NORMAL_EDITABLE_EVENT_MAX + 1):
             if i not in used:
                 return i
         return None
@@ -2044,6 +3113,9 @@ class LevelEditorApp(tk.Tk):
         if not old_id:
             self.status.set("Selected cell has no event/object.")
             return
+        if is_reserved_engine_event(old_id):
+            self.status.set(f"Event {old_id} is a reserved engine marker ({friendly_event_name(self.level.event_def(old_id))}); duplicate its placement, not its definition.")
+            return
         new_id = self.find_free_event_id()
         if new_id is None:
             self.status.set("No free event definition slot found in this level.")
@@ -2055,7 +3127,6 @@ class LevelEditorApp(tk.Tk):
         self.level.grid[y][x]["event"] = new_id
         self.current_event.set(new_id)
         self.highlight_event_id.set(new_id)
-        self.save_event_defs_var.set(True)
         self.refresh_object_palette()
         self.refresh_objects()
         self.refresh_object_types()
@@ -2187,6 +3258,7 @@ class LevelEditorApp(tk.Tk):
         if len(self.undo_stack) > self.max_undo:
             self.undo_stack.pop(0)
         self.redo_stack.clear()
+        self.set_dirty(True)
 
     def undo(self) -> None:
         if not self.level or not self.undo_stack:
@@ -2195,6 +3267,7 @@ class LevelEditorApp(tk.Tk):
         self.redo_stack.append(self._snapshot_state())
         snap = self.undo_stack.pop()
         self._restore_state(snap)
+        self.set_dirty(True)
         self.status.set("Undo applied.")
 
     def redo(self) -> None:
@@ -2204,6 +3277,7 @@ class LevelEditorApp(tk.Tk):
         self.undo_stack.append(self._snapshot_state())
         snap = self.redo_stack.pop()
         self._restore_state(snap)
+        self.set_dirty(True)
         self.status.set("Redo applied.")
 
     def validate_level(self) -> List[Tuple[str, str, str]]:
@@ -2518,6 +3592,28 @@ class LevelEditorApp(tk.Tk):
             except Exception:
                 pass
         self._brush_preview_items = []
+        self._brush_preview_photos = []
+
+    def _tile_brush_preview_photo(self, tile_id: int, size: int) -> Optional[ImageTk.PhotoImage]:
+        if not self.tileset or not (0 <= tile_id < len(self.tileset.tiles)):
+            return None
+        img = self.tileset.tiles[tile_id].resize((size, size), Image.Resampling.NEAREST)
+        if self.paint_bg.get() and int(self.current_bg.get()):
+            overlay = Image.new("RGBA", (size, size), (80, 160, 255, 65))
+            img = Image.alpha_composite(img.convert("RGBA"), overlay)
+        return ImageTk.PhotoImage(img)
+
+    def _event_brush_preview_photo(self, event_id: int, size: int) -> Optional[ImageTk.PhotoImage]:
+        if event_id <= 0:
+            return None
+        sprite = self.event_preview_image(event_id, max(16, min(48, size - 4)))
+        if sprite is None:
+            return None
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        sprite = sprite.copy()
+        sprite.thumbnail((size - 4, size - 4), Image.Resampling.NEAREST)
+        canvas.alpha_composite(sprite, ((size - sprite.width) // 2, (size - sprite.height) // 2))
+        return ImageTk.PhotoImage(canvas)
 
     def _update_brush_preview(self, x: int, y: int) -> None:
         self._clear_brush_preview()
@@ -2530,23 +3626,35 @@ class LevelEditorApp(tk.Tk):
         mode = self.tool_mode.get()
         label = ""
         outline = "#ffffff"
+        photo: Optional[ImageTk.PhotoImage] = None
+
         if mode == "tiles":
-            label = f"tile {int(self.current_tile.get())}"
+            tile_id = int(self.current_tile.get())
+            label = f"tile {tile_id}"
             outline = "#00ffff"
+            photo = self._tile_brush_preview_photo(tile_id, size)
         elif mode in {"events", "objects"}:
             ev = int(self.current_event.get())
             label = "erase event" if ev == 0 else f"event {ev}: {self.event_display_name(ev)[:22]}"
             outline = "#ffff00"
+            photo = self._event_brush_preview_photo(ev, size)
         elif mode == "start":
             label = "START"
             outline = "#00ffff"
         else:
             label = "inspect"
             outline = "#aaaaaa"
+
+        items = []
+        if photo is not None:
+            self._brush_preview_photos.append(photo)
+            items.append(self.canvas.create_image(px, py, image=photo, anchor="nw", tags=("brush_preview", "overlay")))
+            # translucent-ish checker/outline effect is approximated by the dashed outline; Tk images don't support per-item alpha.
         r = self.canvas.create_rectangle(px, py, px + size, py + size, outline=outline, width=2, dash=(4, 3), tags=("brush_preview", "overlay"))
         t = self.canvas.create_text(px + 4, py + 4, text=label, fill=outline, anchor="nw", tags=("brush_preview", "overlay"))
-        self._brush_preview_items = [r, t]
-
+        items.extend([r, t])
+        self._brush_preview_items = items
+        self.canvas.tag_raise("brush_preview")
 
     def canvas_to_cell(self, event: tk.Event) -> Optional[Tuple[int, int]]:
         z = max(1, int(self.zoom.get()))
@@ -2722,7 +3830,7 @@ class LevelEditorApp(tk.Tk):
         md.anim_speed = max(0, min(255, int(self.anim_speed_var.get())))
         self.render_map()
         self.refresh_validation()
-        self.status.set("Applied level metadata fields. Use Save as... to write them.")
+        self.status.set("Applied level metadata fields. Use Save to write them.")
 
     def render_mask_info(self, tile: int) -> None:
         if not self.level or not hasattr(self, "mask_text"):
@@ -2939,31 +4047,69 @@ class LevelEditorApp(tk.Tk):
         self._editing_event_id = event_id
         raw = self.level.event_types[event_id]
         name = self.level.event_names[event_id] if event_id < len(self.level.event_names) else ""
+        evdef = EventDefinition(event_id, name, raw)
+
+        if hasattr(self, "event_def_combo"):
+            vals = self.event_def_combo["values"]
+            if vals:
+                self.event_def_combo.current(event_id)
+
         if hasattr(self, "event_def_edit_vars"):
             for idx, var in self.event_def_edit_vars.items():
                 if idx < len(raw):
                     var.set(raw[idx])
-        self.event_def_title.configure(text=f"Event {event_id:03d}: {name or '(unnamed)'}")
-        lines = [f"event_id: {event_id}", f"name: {name or '(unnamed)'}", f"friendly: {friendly_event_name(EventDefinition(event_id, name, raw))}", "", "bytes:"]
+            if hasattr(self, "event_def_field_labels"):
+                for idx, label in self.event_def_field_labels.items():
+                    label.configure(text=event_field_label_for(raw, idx))
+
+        if hasattr(self, "event_concept_var"):
+            self.event_concept_var.set(infer_event_concept(event_id, raw, name))
+        if hasattr(self, "event_concept_frame"):
+            self.rebuild_event_concept_editor(event_id, raw)
+
+        if hasattr(self, "event_def_title"):
+            self.event_def_title.configure(text=f"Event {event_id:03d}: {friendly_event_name(evdef)}")
+
+        semantic_lines = semantic_event_lines(event_id, raw, name)
+        semantic_lines.append("")
+        semantic_lines.append(f"Used by placements in this level: {self.event_usage_counts().get(event_id, 0)}")
+        if hasattr(self, "event_semantic_text"):
+            self.event_semantic_text.configure(state="normal")
+            self.event_semantic_text.delete("1.0", tk.END)
+            self.event_semantic_text.insert("1.0", "\n".join(semantic_lines))
+            self.event_semantic_text.configure(state="disabled")
+
+        lines = [f"event_id: {event_id}", f"name: {name or '(unnamed)'}", f"friendly: {friendly_event_name(evdef)}"]
+        if is_reserved_engine_event(event_id):
+            info = RESERVED_ENGINE_EVENTS[event_id]
+            lines.extend([
+                "",
+                "RESERVED ENGINE MARKER:",
+                f"  {info['summary']}",
+                f"  {info['editor_hint']}",
+                "  The numeric event ID is what matters for the special behavior.",
+                "  The 32-byte definition is still shown below for completeness.",
+            ])
+        lines.extend(["", "bytes:"])
         for i, value in enumerate(raw):
             label = EVENT_FIELD_NAMES[i] if i < len(EVENT_FIELD_NAMES) else f"byte_{i:02d}"
-            lines.append(f"  {i:02d} {label:<16} = {value:3d}  0x{value:02X}")
+            editable = "" if i in EDITABLE_EVENT_FIELD_INDICES else "  (unused/not editable)"
+            lines.append(f"  {i:02d} {label:<16} = {value:3d}  0x{value:02X}{editable}")
+
         if len(raw) >= 32:
             lines.extend([
                 "",
-                "human-readable summary:",
-                f"  {human_event_description(EventDefinition(event_id, name, raw))}",
-                "",
-                "decoded meaning used by OpenJazz:",
-                f"  category    = {classify_event(event_id, raw, name)}",
-                f"  movement    = {raw[4]} ({movement_name(raw[4])})",
+                "decoded fields:",
+                f"  category    = {semantic_event_category(event_id, raw, name)}",
+                f"  concept     = {infer_event_concept(event_id, raw, name)}",
+                f"  movement    = {raw[4]} ({movement_meaning_detail(raw[4])[0]})",
+                f"  modifier    = {raw[10]} ({modifier_meaning(raw[10])[0]})",
                 f"  left_anim   = {raw[5]}",
                 f"  right_anim  = {raw[6]}",
-                f"  magnitude   = {raw[8]}",
+                f"  magnitude   = {raw[8]} / signed {_signed_byte(raw[8])}",
                 f"  strength    = {raw[9]}",
-                f"  modifier    = {raw[10]}",
                 f"  points      = {raw[11]}",
-                f"  bullet      = {raw[12]}",
+                f"  bullet      = {raw[12]} ({bullet_type_label(raw[12])})",
                 f"  bullet_per. = {raw[13]}",
                 f"  speed       = {raw[15] + 1}",
                 f"  anim_speed  = {raw[17] + 1}",
@@ -3056,18 +4202,31 @@ class LevelEditorApp(tk.Tk):
 
 
     def apply_event_definition_from_ui(self) -> None:
-        if not self.level or not hasattr(self, "event_def_edit_vars"):
+        if not self.level:
             return
         event_id = max(0, min(126, int(self._editing_event_id)))
         raw = bytearray(self.level.event_types[event_id])
-        for idx, var in self.event_def_edit_vars.items():
-            try:
-                raw[idx] = max(0, min(255, int(var.get())))
-            except Exception:
-                pass
+
+        concept = self.event_concept_var.get() if hasattr(self, "event_concept_var") else infer_event_concept(event_id, raw)
+        if concept == "Auto / keep current":
+            concept = infer_event_concept(event_id, raw, self.level.event_names[event_id] if event_id < len(self.level.event_names) else "")
+
+        if not is_reserved_engine_event(event_id):
+            self.apply_event_concept_to_raw(raw, concept)
+
+        # Advanced raw fields can override the concept editor when visible.
+        if hasattr(self, "event_raw_fields_frame") and self.event_raw_fields_frame.winfo_ismapped():
+            for idx, var in getattr(self, "event_def_edit_vars", {}).items():
+                try:
+                    raw[idx] = max(0, min(255, int(var.get())))
+                except Exception:
+                    pass
+
         self.level.event_types[event_id] = bytes(raw)
+        self.set_dirty(True)
         self._event_preview_cache.clear()
         self.populate_events()
+        self.refresh_event_def_selector()
         self.refresh_object_palette()
         self.refresh_objects()
         self.refresh_object_types()
@@ -3076,9 +4235,7 @@ class LevelEditorApp(tk.Tk):
         self.render_map()
         self.refresh_validation()
         uses = self.event_usage_counts().get(event_id, 0)
-        self.status.set(
-            f"Edited event definition {event_id}. It affects {uses} placed object(s). Save level-local event definitions is enabled/available in Level Local Summary to write this table."
-        )
+        self.status.set(f"Applied Event {event_id:03d} as '{concept}'. It affects {uses} placed object(s) in this level.")
 
     def populate_paths(self) -> None:
         if not hasattr(self, "path_combo"):
@@ -3176,7 +4333,7 @@ class LevelEditorApp(tk.Tk):
                 return
             points.append((dx, dy))
         self.level.set_path_points(path_id, points)
-        self.save_paths_var.set(True)
+        self.set_dirty(True)
         self.populate_paths()
         self.selected_path.set(path_id)
         if hasattr(self, "path_combo"):
@@ -3201,12 +4358,12 @@ class LevelEditorApp(tk.Tk):
             messagebox.showerror("Invalid mask", "Could not find 8 editable rows containing only . # 0 1 X characters.")
             return
         self.level.set_tile_mask_rows(tile, rows)
-        self.save_masks_var.set(True)
+        self.set_dirty(True)
         self.render_mask_info(tile)
         self.render_map()
         self.refresh_validation()
         self.refresh_global_summary()
-        self.status.set(f"Edited level-local collision mask for tile {tile}. Save level-local collision masks is now enabled.")
+        self.status.set(f"Edited level-local collision mask for tile {tile}.")
 
     def apply_animation_from_ui(self) -> None:
         if not self.level or not hasattr(self, "anim_tree") or not hasattr(self, "anim_edit_text"):
@@ -3233,7 +4390,7 @@ class LevelEditorApp(tk.Tk):
                 return
             frames.append((frame, xoff, yoff))
         self.level.set_animation_frames(anim_id, frames)
-        self.save_animations_var.set(True)
+        self.set_dirty(True)
         self._event_preview_cache.clear()
         self.populate_animations()
         self.anim_tree.selection_set(str(anim_id))
@@ -3242,7 +4399,7 @@ class LevelEditorApp(tk.Tk):
         self.render_map()
         self.refresh_validation()
         self.refresh_global_summary()
-        self.status.set(f"Edited global animation {anim_id}. Save level-local animations is now enabled.")
+        self.status.set(f"Edited global animation {anim_id}.")
 
     def draw_path_overlay(self, draw: ImageDraw.ImageDraw) -> None:
         if not self.level or not self.level.path_defs:
@@ -3268,25 +4425,45 @@ class LevelEditorApp(tk.Tk):
         draw.ellipse((x-4, y-4, x+4, y+4), outline=(255, 255, 80, 255), width=2)
         draw.text((anchor_x * TILE_SIZE + 2, anchor_y * TILE_SIZE + 2), f"P{path_id}", fill=(80, 255, 255, 255))
 
-    def save_as(self) -> None:
+    def _save_to_path(self, path: Path) -> bool:
         if not self.level:
-            return
-        default = self.level.path.with_name(self.level.path.name + ".edited")
+            return False
+        try:
+            self.level.save_as(
+                path,
+                save_event_defs=True,
+                save_paths=True,
+                save_masks=True,
+                save_animations=True,
+            )
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc))
+            return False
+        self.current_save_path = path
+        self.set_dirty(False)
+        self.status.set(f"Saved {path}")
+        return True
+
+    def save(self) -> bool:
+        if not self.level:
+            return False
+        target = self.current_save_path or self.level.path
+        return self._save_to_path(Path(target))
+
+    def save_as(self) -> bool:
+        if not self.level:
+            return False
+        default = self.current_save_path or self.level.path
         target = filedialog.asksaveasfilename(
-            title="Save patched level as",
-            initialdir=str(self.level.path.parent),
+            title="Save level as",
+            initialdir=str(default.parent),
             initialfile=default.name,
             filetypes=[("JJ1 level", "LEVEL*.*"), ("All files", "*")],
         )
         if not target:
-            return
-        try:
-            self.level.save_as(Path(target), save_event_defs=bool(self.save_event_defs_var.get()), save_paths=bool(self.save_paths_var.get()), save_masks=bool(self.save_masks_var.get()), save_animations=bool(self.save_animations_var.get()))
-        except Exception as exc:
-            messagebox.showerror("Save failed", str(exc))
-            return
-        self.status.set(f"Saved {target}")
-        messagebox.showinfo("Saved", f"Saved patched level to:\n{target}\n\nCurrently saved: grid tile IDs, BG flags, map event placements and basic level metadata/player start. Global tables are written only when their checkboxes are enabled: event definitions, paths, collision masks and animations.")
+            return False
+        return self._save_to_path(Path(target))
+
 
 
 def main(argv: Optional[List[str]] = None) -> int:
