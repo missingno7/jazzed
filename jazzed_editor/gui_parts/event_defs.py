@@ -152,15 +152,22 @@ class EventDefsMixin:
 
         def add_spin(row: int, key: str, label: str, value: int, frm: int = 0, to: int = 255, hint: str = "") -> int:
             ttk.Label(self.event_concept_frame, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
-            var = tk.IntVar(value=int(value))
+            var = tk.StringVar(value=self.sound_choice_value(value)) if key == "sound" else tk.IntVar(value=int(value))
             self.event_concept_vars[key] = var
             field = ttk.Frame(self.event_concept_frame)
             field.grid(row=row, column=1, sticky="w", pady=2)
-            ttk.Spinbox(field, from_=frm, to=to, width=8, textvariable=var).pack(side=tk.LEFT)
+            if key == "sound":
+                ttk.Combobox(field, state="readonly", values=self.sound_choice_values(), textvariable=var, width=28).pack(side=tk.LEFT)
+            else:
+                ttk.Spinbox(field, from_=frm, to=to, width=8, textvariable=var).pack(side=tk.LEFT)
             if key in {"left_anim", "right_anim", "finish_left", "finish_right", "shoot_left", "shoot_right"}:
                 ttk.Button(field, text="Atlas…", command=lambda k=key: self.open_animation_picker_for(k)).pack(side=tk.LEFT, padx=(4, 0))
             if key == "bullet":
                 ttk.Button(field, text="Pick…", command=lambda k=key: self.open_bullet_picker_for(k)).pack(side=tk.LEFT, padx=(4, 0))
+            if key == "destroy_tile":
+                ttk.Button(field, text="Tile atlas…", command=lambda k=key: self.open_tile_picker_for(k)).pack(side=tk.LEFT, padx=(4, 0))
+            if key == "sound":
+                ttk.Button(field, text="Play", command=lambda v=var: self.play_sound_id(self.sound_id_from_choice(v.get()))).pack(side=tk.LEFT, padx=(4, 0))
             if hint:
                 ttk.Label(self.event_concept_frame, text=hint).grid(row=row, column=2, sticky="w", padx=(8, 0), pady=2)
             return row + 1
@@ -378,6 +385,43 @@ class EventDefsMixin:
         canvas.configure(scrollregion=(0, 0, cols * cell_w, rows * cell_h))
         win._photo_refs = refs  # keep image references alive
 
+    def open_tile_picker_for(self, key: str) -> None:
+        if not self.tileset or key not in self.event_concept_vars:
+            return
+        win = tk.Toplevel(self)
+        win.title("Pick tile")
+        win.geometry("760x520")
+        frame = ttk.Frame(win, padding=8)
+        frame.pack(fill=tk.BOTH, expand=True)
+        canvas = tk.Canvas(frame, background="#181818", highlightthickness=0)
+        yscroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=yscroll.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        yscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        scale = 2
+        cols = 10
+        cell = TILE_SIZE * scale
+        refs = []
+
+        def choose(tile_id: int) -> None:
+            self.event_concept_vars[key].set(tile_id)
+            win.destroy()
+
+        for i, tile in enumerate(self.tileset.tiles):
+            x = (i % cols) * cell
+            y = (i // cols) * cell
+            photo = ImageTk.PhotoImage(tile.resize((cell, cell), Image.Resampling.NEAREST))
+            refs.append(photo)
+            tag = f"tile_picker_{i}"
+            canvas.create_rectangle(x, y, x + cell, y + cell, fill="#000000", outline="#555555", tags=(tag,))
+            canvas.create_image(x, y, image=photo, anchor="nw", tags=(tag,))
+            canvas.create_text(x + 3, y + 3, text=str(i), fill="#ffff80", anchor="nw", tags=(tag,))
+            canvas.tag_bind(tag, "<Button-1>", lambda _e, tile_id=i: choose(tile_id))
+            canvas.tag_bind(tag, "<Double-1>", lambda _e, tile_id=i: choose(tile_id))
+        rows = max(1, (len(self.tileset.tiles) + cols - 1) // cols)
+        canvas.configure(scrollregion=(0, 0, cols * cell, rows * cell))
+        win._photo_refs = refs
+
     def apply_event_concept_to_raw(self, raw: bytearray, concept: str) -> None:
         self.apply_concept_template_to_raw(raw, concept)
         vars = getattr(self, "event_concept_vars", {})
@@ -385,6 +429,8 @@ class EventDefsMixin:
             var = vars.get(key)
             if var is None:
                 return default
+            if key == "sound":
+                return self.sound_id_from_choice(var.get())
             try:
                 return int(var.get())
             except Exception:
@@ -658,4 +704,3 @@ class EventDefsMixin:
         self.refresh_validation()
         uses = self.event_usage_counts().get(event_id, 0)
         self.status.set(f"Applied Event {event_id:03d} as '{concept}'. It affects {uses} placed object(s) in this level.")
-

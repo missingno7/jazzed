@@ -25,6 +25,7 @@ from .gui_parts.level_local import LevelLocalMixin
 from .gui_parts.objects import ObjectsMixin
 from .gui_parts.overview import OverviewMixin
 from .gui_parts.rendering import RenderingMixin
+from .gui_parts.sounds import SoundsMixin
 
 class LevelEditorApp(
     OverviewMixin,
@@ -35,6 +36,7 @@ class LevelEditorApp(
     LevelIoMixin,
     ObjectsMixin,
     RenderingMixin,
+    SoundsMixin,
     EditingMixin,
     tk.Tk,
 ):
@@ -105,6 +107,9 @@ class LevelEditorApp(
         self._brush_preview_items: List[int] = []
         self._brush_preview_photos: List[ImageTk.PhotoImage] = []
         self._asset_photo_refs: List[ImageTk.PhotoImage] = []
+        self._sound_archive = None
+        self._sound_archive_loaded = False
+        self._last_played_sound_path = None
         self.dirty = False
         self.current_save_path: Optional[Path] = None
 
@@ -292,8 +297,6 @@ class LevelEditorApp(
 
 
         # Reserved markers are numeric IDs, not a cloneable raw template.
-
-
 
 
 

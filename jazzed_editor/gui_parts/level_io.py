@@ -110,6 +110,8 @@ class LevelIoMixin:
         self._object_icon_photos.clear()
         self._collision_tile_cache.clear()
         self._collision_chunk_cache.clear()
+        self._sound_archive = None
+        self._sound_archive_loaded = False
         self.status.set(
             f"Loaded {self.level.path.name}: level={self.level.level_num}, world={self.level.world_num}, "
             f"blocks={self.tileset.path.name}, tiles={len(self.tileset.tiles)}, "
@@ -385,4 +387,3 @@ class LevelIoMixin:
         if not target:
             return False
         return self._save_to_path(Path(target))
-

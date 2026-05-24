@@ -9,6 +9,7 @@ from .constants import *
 from .event_semantics import *
 from .codecs import *
 from .models import *
+from .sounds import *
 
 __all__ = [
     "JJ1Parser",

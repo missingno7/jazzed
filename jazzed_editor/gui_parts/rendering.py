@@ -149,9 +149,12 @@ class RenderingMixin:
 
         img = Image.new("RGBA", (width, height), bg)
         draw = ImageDraw.Draw(img, "RGBA")
+        viewport_h = max(100, self.canvas.winfo_height() or 480) if hasattr(self, "canvas") else 480
+        bg_scale = max(1, (viewport_h - 1) // 100 + 1)
         global_y0 = tile_y0 * TILE_SIZE
         for y in range(height):
-            r, g, b = palette[156 + ((global_y0 + y) % 100)]
+            palette_row = min(99, ((global_y0 + y) % viewport_h) // bg_scale)
+            r, g, b = palette[156 + palette_row]
             draw.line((0, y, width, y), fill=(r, g, b, 255))
 
         sky_orb = self.level.metadata.sky_orb
@@ -196,7 +199,7 @@ class RenderingMixin:
                     if self.level.grid[y][x]["bg"]:
                         px = x * tile_px
                         py = y * tile_px
-                        self.canvas.create_rectangle(px, py, px + tile_px, py + tile_px, fill="#50a0ff", stipple="gray50", outline="", tags=("overlay", "bg_overlay"))
+                        self.canvas.create_rectangle(px, py, px + tile_px, py + tile_px, fill="#000000", stipple="gray50", outline="#ffffff", tags=("overlay", "bg_overlay"))
 
         if self.show_collision.get():
             self._draw_collision_overlay_canvas(tile_px)
@@ -456,4 +459,3 @@ class RenderingMixin:
         items.extend([r, t])
         self._brush_preview_items = items
         self.canvas.tag_raise("brush_preview")
-

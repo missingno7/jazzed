@@ -52,6 +52,8 @@ These tables are stored inside the current level file and can affect many map pl
 
 The assets browser previews game-wide files in the selected game data directory, such as tilesets, sprites, audio/resource files, and other original DOS assets.
 
+The Audio tab can browse and play individual clips from `SOUNDS.000`. Music module formats such as `.PSM` are listed but should be opened externally.
+
 ## Save Behavior
 
 `Save` writes changes back to the current level path.

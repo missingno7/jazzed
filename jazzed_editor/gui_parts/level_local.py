@@ -74,6 +74,7 @@ class LevelLocalMixin:
         self.bullet_edit_frame = ttk.LabelFrame(right, text="Bullet definition", padding=6)
         self.bullet_edit_frame.pack(fill=tk.X, pady=(0, 6))
         self.bullet_edit_vars: Dict[str, Any] = {}
+        self.bullet_sound_combos: Dict[str, ttk.Combobox] = {}
         self._build_bullet_fields(self.bullet_edit_frame)
 
         preview_frame = ttk.LabelFrame(right, text="Sprite preview", padding=6)
@@ -82,6 +83,7 @@ class LevelLocalMixin:
 
     def _build_bullet_fields(self, parent: ttk.Frame) -> None:
         self.bullet_edit_vars.clear()
+        self.bullet_sound_combos.clear()
         row = 0
         self.bullet_name_var = tk.StringVar(value="")
         self.bullet_edit_vars["name"] = self.bullet_name_var
@@ -114,13 +116,20 @@ class LevelLocalMixin:
             ("behaviour", "Behaviour", 0, 255), ("start_sound", "Start sound", 0, 255),
         ]:
             ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
-            var = tk.IntVar(value=0)
+            var = tk.StringVar(value=self.sound_choice_value(0)) if key in {"finish_sound", "start_sound"} else tk.IntVar(value=0)
             self.bullet_edit_vars[key] = var
             field = ttk.Frame(parent)
             field.grid(row=row, column=1, sticky="w", pady=2)
-            ttk.Spinbox(field, from_=frm, to=to, width=7, textvariable=var).pack(side=tk.LEFT)
+            if key in {"finish_sound", "start_sound"}:
+                combo = ttk.Combobox(field, state="readonly", values=self.sound_choice_values(), textvariable=var, width=24)
+                combo.pack(side=tk.LEFT)
+                self.bullet_sound_combos[key] = combo
+            else:
+                ttk.Spinbox(field, from_=frm, to=to, width=7, textvariable=var).pack(side=tk.LEFT)
             if key == "finish_anim":
                 ttk.Button(field, text="Atlas…", command=lambda k=key: self.open_animation_picker_for_bullet(k)).pack(side=tk.LEFT, padx=(4, 0))
+            if key in {"finish_sound", "start_sound"}:
+                ttk.Button(field, text="Play", command=lambda v=var: self.play_sound_id(self.sound_id_from_choice(v.get()))).pack(side=tk.LEFT, padx=(4, 0))
             row += 1
 
     def populate_bullets(self) -> None:
@@ -153,10 +162,16 @@ class LevelLocalMixin:
             self.bullet_edit_vars[f"yspeed_{i}"].set(b.yspeeds[i])
             self.bullet_edit_vars[f"gravity_{i}"].set(b.gravities[i])
         self.bullet_edit_vars["finish_anim"].set(b.finish_anim)
-        self.bullet_edit_vars["finish_sound"].set(b.finish_sound)
+        self.bullet_edit_vars["finish_sound"].set(self.sound_choice_value(b.finish_sound))
         self.bullet_edit_vars["behaviour"].set(b.behaviour)
-        self.bullet_edit_vars["start_sound"].set(b.start_sound)
+        self.bullet_edit_vars["start_sound"].set(self.sound_choice_value(b.start_sound))
+        self.refresh_bullet_sound_choices()
         self.render_bullet_preview(b)
+
+    def refresh_bullet_sound_choices(self) -> None:
+        values = self.sound_choice_values()
+        for combo in getattr(self, "bullet_sound_combos", {}).values():
+            combo.configure(values=values)
 
     def render_bullet_preview(self, b: BulletDefinition) -> None:
         if not hasattr(self, "bullet_preview_frame"):
@@ -194,9 +209,9 @@ class LevelLocalMixin:
             raw[8 + i] = int(self.bullet_edit_vars[f"yspeed_{i}"].get()) & 0xFF
             raw[12 + i] = int(self.bullet_edit_vars[f"gravity_{i}"].get()) & 0xFF
         raw[16] = max(0, min(127, int(self.bullet_edit_vars["finish_anim"].get())))
-        raw[17] = max(0, min(255, int(self.bullet_edit_vars["finish_sound"].get())))
+        raw[17] = self.sound_id_from_choice(self.bullet_edit_vars["finish_sound"].get())
         raw[18] = max(0, min(255, int(self.bullet_edit_vars["behaviour"].get())))
-        raw[19] = max(0, min(255, int(self.bullet_edit_vars["start_sound"].get())))
+        raw[19] = self.sound_id_from_choice(self.bullet_edit_vars["start_sound"].get())
         name = self.bullet_name_var.get().strip()[:20]
         self.level.bullet_names[bullet_id] = name
         self.level.bullet_defs[bullet_id] = BulletDefinition(bullet_id, name, bytes(raw))
@@ -542,4 +557,3 @@ class LevelLocalMixin:
             prev = cur
         draw.ellipse((x-4, y-4, x+4, y+4), outline=(255, 255, 80, 255), width=2)
         draw.text((anchor_x * TILE_SIZE + 2, anchor_y * TILE_SIZE + 2), f"P{path_id}", fill=(80, 255, 255, 255))
-

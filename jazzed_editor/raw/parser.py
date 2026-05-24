@@ -9,7 +9,22 @@ from PIL import Image
 from .codecs import decode_palette, decode_rle_block, read_u16, skip_c_string
 from .constants import *
 from .models import *
+from .sounds import SoundArchive, parse_sound_archive
 from .sprites import _read_one_jj1_sprite
+
+
+def _tile_from_indices(raw: bytes, palette: List[Tuple[int, int, int]]) -> Image.Image:
+    """Create a JJ1 tile image using OpenJazz's tileset colour key."""
+    flat_palette: List[int] = []
+    for r, g, b in palette:
+        flat_palette.extend([r, g, b])
+    img = Image.frombytes("P", (TILE_SIZE, TILE_SIZE), raw)
+    img.putpalette(flat_palette)
+    rgba = img.convert("RGBA")
+    alpha = bytes(0 if px == TKEY else 255 for px in raw)
+    rgba.putalpha(Image.frombytes("L", (TILE_SIZE, TILE_SIZE), alpha))
+    return rgba
+
 
 class JJ1Parser:
     def __init__(self, game_dir: Path):
@@ -94,6 +109,8 @@ class JJ1Parser:
 
         # Skip through the OpenJazz layout to find metadata offsets that are not part of the map grid.
         metadata = LevelMetadata()
+        sound_rates = [11025] * SOUNDS
+        sound_names = [""] * SOUNDS
         try:
             anim_raw, start, payload, end = decode_rle_block(data, pos, ANIMS << 6)
             spans["animations"] = RleSpan("animations", start, payload, end, ANIMS << 6)
@@ -102,8 +119,12 @@ class JJ1Parser:
             spans["animation_names"] = RleSpan("animation_names", start, payload, end, ANIMS * LONGNAME)
             pos = end
             pos += 16 * (SHORTNAME + 1) + 9
-            pos += 2 * 32  # sound rates, 32 little-endian shorts
-            for _ in range(32):
+            for i in range(SOUNDS):
+                sound_rates[i], pos = read_u16(data, pos)
+            for i in range(SOUNDS):
+                n = data[pos] if pos < len(data) else 0
+                raw_name = data[pos + 1:pos + 1 + min(n, SHORTNAME)]
+                sound_names[i] = raw_name.decode("ascii", errors="replace").strip("\x00")
                 pos = skip_c_string(data, pos, SHORTNAME)
             pos = skip_c_string(data, pos, 12)  # music file
             pos += 13  # start cutscene
@@ -212,7 +233,7 @@ class JJ1Parser:
                 points.append((x_delta, y_delta))
             path_defs.append(PathDefinition(path_id, chunk, length, points))
 
-        return LevelData(path, data, spans, level_num, world_num, blocks_ext, grid, event_types, event_names, animations, animation_names, bullet_defs, bullet_names, bullets_raw, attack_names_raw, paths_raw, path_defs, masks_raw, metadata)
+        return LevelData(path, data, spans, level_num, world_num, blocks_ext, grid, event_types, event_names, animations, animation_names, bullet_defs, bullet_names, sound_rates, sound_names, bullets_raw, attack_names_raw, paths_raw, path_defs, masks_raw, metadata)
 
     def load_tileset_for_level(self, level: LevelData) -> TilesetData:
         ext = f"{level.world_num:03d}" if level.blocks_ext == "999" else level.blocks_ext.zfill(3)
@@ -227,18 +248,13 @@ class JJ1Parser:
         _, _, _, pos = decode_rle_block(data, pos, 256 * 3)
 
         tiles: List[Image.Image] = []
-        flat_palette: List[int] = []
-        for r, g, b in palette:
-            flat_palette.extend([r, g, b])
         for set_index in range(TSETS):
             marker = data[pos:pos + 2]
             pos += 2
             if marker == b"ok":
                 for _ in range(TNUM):
                     raw, _, _, pos = decode_rle_block(data, pos, TILE_SIZE * TILE_SIZE)
-                    img = Image.frombytes("P", (TILE_SIZE, TILE_SIZE), raw)
-                    img.putpalette(flat_palette)
-                    tiles.append(img.convert("RGBA"))
+                    tiles.append(_tile_from_indices(raw, palette))
             elif marker == b"  ":
                 continue
             else:
@@ -250,6 +266,9 @@ class JJ1Parser:
         for i, tile in enumerate(tiles):
             atlas.paste(tile, ((i % columns) * TILE_SIZE, (i // columns) * TILE_SIZE))
         return TilesetData(path, palette, sky_palette, tiles, atlas)
+
+    def load_sound_archive(self) -> SoundArchive:
+        return parse_sound_archive(self.find_file("SOUNDS.000"))
 
     def load_sprites_for_level(self, level: LevelData, palette: List[Tuple[int, int, int]]) -> Optional[SpriteSetData]:
         try:
@@ -287,4 +306,3 @@ class JJ1Parser:
             sprites.append(frame)
         sprites.append(SpriteFrame(sprite_count, Image.new("RGBA", (1, 1), (0, 0, 0, 0)), 0, 0))
         return SpriteSetData(spec_path, main_path, sprites)
-

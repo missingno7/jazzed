@@ -212,6 +212,8 @@ class LevelData:
     animation_names: List[str]
     bullet_defs: List[BulletDefinition]
     bullet_names: List[str]
+    sound_rates: List[int]
+    sound_names: List[str]
     bullets_raw: bytes
     attack_names_raw: bytes
     paths_raw: bytes
@@ -238,6 +240,15 @@ class LevelData:
         if 0 <= bullet_id < len(self.bullet_defs):
             return self.bullet_defs[bullet_id]
         return BulletDefinition(bullet_id, "", bytes(BLENGTH))
+
+    def sound_slot(self, sound_id: int) -> Tuple[str, int]:
+        sound_id = int(sound_id)
+        if sound_id <= 0:
+            return "", 0
+        idx = sound_id - 1
+        name = self.sound_names[idx] if 0 <= idx < len(self.sound_names) else ""
+        rate = self.sound_rates[idx] if 0 <= idx < len(self.sound_rates) else 11025
+        return name, rate or 11025
 
     def bullets_to_bytes(self) -> bytes:
         out = bytearray(BULLETS * BLENGTH)

@@ -114,14 +114,23 @@ class AssetsMixin:
         row.pack(fill=tk.X, pady=(0, 4))
         ttk.Button(row, text="Refresh", command=self.refresh_game_audio).pack(side=tk.LEFT)
         ttk.Button(row, text="Open selected externally", command=self.open_selected_audio_external).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Label(row, text="Native playback/export for JJ1 audio formats is a future decoder step.").pack(side=tk.LEFT, padx=(8, 0))
 
+        panes = ttk.PanedWindow(tab, orient=tk.HORIZONTAL)
+        panes.pack(fill=tk.BOTH, expand=True)
+        left = ttk.Frame(panes)
+        right = ttk.Frame(panes)
+        panes.add(left, weight=2)
+        panes.add(right, weight=3)
         columns = ("kind", "file", "size")
-        self.game_audio_tree = ttk.Treeview(tab, columns=columns, show="headings", height=22, selectmode="browse")
+        self.game_audio_tree = ttk.Treeview(left, columns=columns, show="headings", height=22, selectmode="browse")
         for col, width, title in [("kind", 100, "Kind"), ("file", 220, "File"), ("size", 80, "Bytes")]:
             self.game_audio_tree.heading(col, text=title)
             self.game_audio_tree.column(col, width=width, stretch=(col == "file"))
         self.game_audio_tree.pack(fill=tk.BOTH, expand=True)
+        self.game_audio_tree.bind("<<TreeviewSelect>>", self.on_game_audio_select)
+
+        self.game_audio_detail = ttk.Frame(right, padding=(8, 0, 0, 0))
+        self.game_audio_detail.pack(fill=tk.BOTH, expand=True)
 
     def _make_image_atlas(self, images: List[Image.Image], cell: int = 40, columns: int = 12, label_prefix: str = "") -> Image.Image:
         rows = max(1, (len(images) + columns - 1) // columns)
@@ -217,6 +226,131 @@ class AssetsMixin:
             kind = exts.get(p.suffix.upper())
             if kind or "SOUND" in p.name.upper() or "MUSIC" in p.name.upper():
                 self.game_audio_tree.insert("", "end", iid=p.name, values=(kind or "resource", p.name, p.stat().st_size))
+        self.render_audio_detail(None)
+
+    def on_game_audio_select(self, _event: tk.Event = None) -> None:
+        if not hasattr(self, "game_audio_tree"):
+            return
+        sel = self.game_audio_tree.selection()
+        self.render_audio_detail(sel[0] if sel else None)
+
+    def render_audio_detail(self, name: Optional[str]) -> None:
+        if not hasattr(self, "game_audio_detail"):
+            return
+        for child in self.game_audio_detail.winfo_children():
+            child.destroy()
+        if not name:
+            ttk.Label(self.game_audio_detail, text="Select an audio asset.").pack(anchor="w")
+            return
+        path = self.parser.game_dir / name
+        ttk.Label(self.game_audio_detail, text=name, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        ttk.Label(self.game_audio_detail, text=f"{path.stat().st_size} bytes").pack(anchor="w", pady=(0, 8))
+        upper = name.upper()
+        if upper == "SOUNDS.000":
+            self.render_sound_archive_detail(path)
+        elif path.suffix.upper() == ".PSM":
+            self.render_music_asset_detail(path)
+        else:
+            ttk.Label(self.game_audio_detail, text="No native decoder for this file type yet.").pack(anchor="w", pady=(0, 8))
+            ttk.Button(self.game_audio_detail, text="Open externally", command=self.open_selected_audio_external).pack(anchor="w")
+
+    def render_sound_archive_detail(self, path: Path) -> None:
+        try:
+            archive = parse_sound_archive(path)
+        except Exception as exc:
+            ttk.Label(self.game_audio_detail, text=f"Could not parse sound archive: {exc}").pack(anchor="w")
+            return
+        controls = ttk.Frame(self.game_audio_detail)
+        controls.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(controls, text="Play selected", command=lambda: play_selected()).pack(side=tk.LEFT)
+        ttk.Label(controls, text="Signed 8-bit mono PCM clips").pack(side=tk.LEFT, padx=(8, 0))
+        columns = ("index", "name", "length", "offset")
+        tree = ttk.Treeview(self.game_audio_detail, columns=columns, show="headings", height=18, selectmode="browse")
+        for col, width, title in [("index", 56, "Index"), ("name", 150, "Name"), ("length", 80, "Bytes"), ("offset", 80, "Offset")]:
+            tree.heading(col, text=title)
+            tree.column(col, width=width, stretch=(col == "name"))
+        tree.pack(fill=tk.BOTH, expand=True)
+        for i, sound in enumerate(archive.sounds):
+            tree.insert("", "end", iid=str(i), values=(i, sound.name, sound.length, sound.offset))
+
+        def play_selected() -> None:
+            selection = tree.selection()
+            if not selection:
+                return
+            idx = int(selection[0])
+            if 0 <= idx < len(archive.sounds):
+                self.play_raw_sound(archive.sounds[idx], 11025)
+
+        tree.bind("<Double-1>", lambda _e: play_selected())
+        if archive.sounds:
+            tree.selection_set("0")
+
+    def render_music_asset_detail(self, path: Path) -> None:
+        ttk.Label(self.game_audio_detail, text="PSM music is a tracker/module format.").pack(anchor="w")
+        ttk.Label(
+            self.game_audio_detail,
+            text="OpenJazz plays it through libxmp. Direct MIDI export is lossy/non-trivial because modules contain samples, patterns, and tracker effects.",
+            wraplength=420,
+        ).pack(anchor="w", pady=(4, 8))
+        row = ttk.Frame(self.game_audio_detail)
+        row.pack(fill=tk.X)
+        ttk.Button(row, text="Open externally", command=self.open_selected_audio_external).pack(side=tk.LEFT)
+        ttk.Button(row, text="Play externally", command=self.open_selected_audio_external).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(
+            self.game_audio_detail,
+            text="Native playback can be added with a libxmp/OpenMPT backend when that dependency is available.",
+            wraplength=420,
+        ).pack(anchor="w", pady=(8, 0))
+
+    def play_selected_audio_asset(self) -> None:
+        if not hasattr(self, "game_audio_tree"):
+            return
+        sel = self.game_audio_tree.selection()
+        if not sel:
+            return
+        name = sel[0]
+        path = self.parser.game_dir / name
+        if name.upper() == "SOUNDS.000":
+            try:
+                archive = parse_sound_archive(path)
+            except Exception as exc:
+                messagebox.showerror("Sound archive failed", str(exc))
+                return
+            self.open_sound_archive_browser(archive)
+            return
+        self.status.set(f"{name} is not a decoded SFX archive yet; opening externally.")
+        self.open_selected_audio_external()
+
+    def open_sound_archive_browser(self, archive: SoundArchive) -> None:
+        win = tk.Toplevel(self)
+        win.title(f"Sound clips - {archive.path.name}")
+        win.geometry("620x520")
+        frame = ttk.Frame(win, padding=8)
+        frame.pack(fill=tk.BOTH, expand=True)
+        top = ttk.Frame(frame)
+        top.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(top, text="Play selected", command=lambda: play_selected()).pack(side=tk.LEFT)
+        ttk.Label(top, text="Raw JJ1 clips are signed 8-bit mono PCM, played as WAV.").pack(side=tk.LEFT, padx=(8, 0))
+        columns = ("index", "name", "length", "offset")
+        tree = ttk.Treeview(frame, columns=columns, show="headings", height=20, selectmode="browse")
+        for col, width, title in [("index", 60, "Index"), ("name", 180, "Name"), ("length", 90, "Bytes"), ("offset", 90, "Offset")]:
+            tree.heading(col, text=title)
+            tree.column(col, width=width, stretch=(col == "name"))
+        tree.pack(fill=tk.BOTH, expand=True)
+        for i, sound in enumerate(archive.sounds):
+            tree.insert("", "end", iid=str(i), values=(i, sound.name, sound.length, sound.offset))
+
+        def play_selected() -> None:
+            selection = tree.selection()
+            if not selection:
+                return
+            idx = int(selection[0])
+            if 0 <= idx < len(archive.sounds):
+                self.play_raw_sound(archive.sounds[idx], 11025)
+
+        tree.bind("<Double-1>", lambda _e: play_selected())
+        if archive.sounds:
+            tree.selection_set("0")
 
     def open_selected_audio_external(self) -> None:
         if not hasattr(self, "game_audio_tree"):
@@ -307,4 +441,3 @@ class AssetsMixin:
             rows.append((p.name, "world/episode"))
         for row in rows:
             self.game_sprites_tree.insert("", "end", iid=row[0], values=row)
-
