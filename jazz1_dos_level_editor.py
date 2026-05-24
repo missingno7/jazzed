@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Jazz Jackrabbit 1 DOS Data Level Editor v23 (reliable animation picker)
+Jazz Jackrabbit 1 DOS Data Level Editor v24 (level-local bullet editor)
 
 Standalone editor for original DOS Jazz Jackrabbit 1 data files. OpenJazz is used only as a reference for interpreting the original format.
 
@@ -54,6 +54,10 @@ PATH_BYTES = 16 << 9
 EVENTS = 127
 ELENGTH = 32
 ANIMS = 128
+BULLETS = 32
+BLENGTH = 20
+JJ1PANIMS = 38
+JJ1MANIMS = 4
 SHORTNAME = 8
 LONGNAME = 16
 TKEY = 127
@@ -839,6 +843,65 @@ class ObjectPlacement:
     name: str
 
 
+
+@dataclass
+class BulletDefinition:
+    bullet_id: int
+    name: str
+    raw: bytes
+
+    @property
+    def sprites(self) -> List[int]:
+        return [self.raw[i] if i < len(self.raw) else 0 for i in range(4)]
+
+    @property
+    def xspeeds(self) -> List[int]:
+        return [_signed_byte(self.raw[4 + i]) if 4 + i < len(self.raw) else 0 for i in range(4)]
+
+    @property
+    def yspeeds(self) -> List[int]:
+        return [_signed_byte(self.raw[8 + i]) if 8 + i < len(self.raw) else 0 for i in range(4)]
+
+    @property
+    def gravities(self) -> List[int]:
+        return [_signed_byte(self.raw[12 + i]) if 12 + i < len(self.raw) else 0 for i in range(4)]
+
+    @property
+    def finish_anim(self) -> int:
+        return self.raw[16] if len(self.raw) > 16 else 0
+
+    @property
+    def finish_sound(self) -> int:
+        return self.raw[17] if len(self.raw) > 17 else 0
+
+    @property
+    def behaviour(self) -> int:
+        return self.raw[18] if len(self.raw) > 18 else 0
+
+    @property
+    def start_sound(self) -> int:
+        return self.raw[19] if len(self.raw) > 19 else 0
+
+    @property
+    def is_empty(self) -> bool:
+        return not any(self.raw) and not self.name
+
+
+def bullet_direction_name(i: int) -> str:
+    return ["left", "right", "lower-left", "lower-right"][i] if 0 <= i < 4 else f"dir{i}"
+
+
+def bullet_display_name(bullet: BulletDefinition) -> str:
+    if bullet.name:
+        return bullet.name
+    if bullet.is_empty:
+        return "Unused"
+    nonzero_sprites = [s for s in bullet.sprites if s]
+    if nonzero_sprites:
+        return f"Sprite {'/'.join(map(str, nonzero_sprites[:2]))}"
+    return bullet_type_label(bullet.bullet_id)
+
+
 @dataclass
 class LevelData:
     path: Path
@@ -852,6 +915,10 @@ class LevelData:
     event_names: List[str]
     animations: List[AnimationDefinition]
     animation_names: List[str]
+    bullet_defs: List[BulletDefinition]
+    bullet_names: List[str]
+    bullets_raw: bytes
+    attack_names_raw: bytes
     paths_raw: bytes
     path_defs: List[PathDefinition]
     masks: bytes
@@ -870,6 +937,28 @@ class LevelData:
         if 0 <= anim_id < len(self.animations):
             return self.animations[anim_id]
         return None
+
+    def bullet_def(self, bullet_id: int) -> BulletDefinition:
+        bullet_id = max(0, min(BULLETS - 1, int(bullet_id)))
+        if 0 <= bullet_id < len(self.bullet_defs):
+            return self.bullet_defs[bullet_id]
+        return BulletDefinition(bullet_id, "", bytes(BLENGTH))
+
+    def bullets_to_bytes(self) -> bytes:
+        out = bytearray(BULLETS * BLENGTH)
+        for i in range(BULLETS):
+            raw = self.bullet_defs[i].raw if i < len(self.bullet_defs) else bytes(BLENGTH)
+            out[i * BLENGTH:(i + 1) * BLENGTH] = bytes(raw[:BLENGTH]).ljust(BLENGTH, b"\0")
+        return bytes(out)
+
+    def attack_names_to_bytes(self) -> bytes:
+        out = bytearray(BULLETS * 21)
+        for i in range(BULLETS):
+            name = self.bullet_names[i] if i < len(self.bullet_names) else ""
+            data = name.encode("ascii", errors="replace")[:20]
+            out[i * 21] = len(data)
+            out[i * 21 + 1:i * 21 + 1 + len(data)] = data
+        return bytes(out)
 
     def mask_solid_at(self, tile: int, pixel_x: int, pixel_y: int) -> bool:
         # Each tile has an 8x8 low-resolution collision mask. One mask bit covers roughly 4x4 pixels.
@@ -981,7 +1070,7 @@ class LevelData:
                     result.append(ObjectPlacement(x, y, event, cell["tile"], cell["bg"], name))
         return result
 
-    def save_as(self, target: Path, save_event_defs: bool = False, save_paths: bool = False, save_masks: bool = False, save_animations: bool = False) -> None:
+    def save_as(self, target: Path, save_event_defs: bool = False, save_paths: bool = False, save_masks: bool = False, save_animations: bool = False, save_bullets: bool = False) -> None:
         replacements: List[Tuple[str, bytes]] = [("grid", encode_rle_block(self.grid_to_bytes()))]
         if save_masks:
             replacements.append(("masks", encode_rle_block(self.masks_to_bytes())))
@@ -991,6 +1080,10 @@ class LevelData:
             replacements.append(("events", encode_rle_block(self.event_types_to_bytes())))
         if save_animations:
             replacements.append(("animations", encode_rle_block(self.animations_to_bytes())))
+        if save_bullets and "bullets" in self.spans:
+            replacements.append(("bullets", encode_rle_block(self.bullets_to_bytes())))
+        if save_bullets and "attack_names" in self.spans:
+            replacements.append(("attack_names", encode_rle_block(self.attack_names_to_bytes())))
 
         patched = bytearray(self.raw_file)
         deltas: List[Tuple[int, int, int]] = []  # original start, original end, delta
@@ -1151,8 +1244,27 @@ class JJ1Parser:
             metadata.water_level, pos = read_u16(data, pos)
             metadata.anim_speed_pos = pos
             metadata.anim_speed = data[pos]
+            pos += 1
+            pos += 2  # unknown/end marker after animation speed
+
+            try:
+                _, start, payload, end = decode_rle_block(data, pos, JJ1PANIMS * 2)
+                spans["player_anims"] = RleSpan("player_anims", start, payload, end, JJ1PANIMS * 2)
+                pos = end
+                pos += JJ1MANIMS
+                bullets_raw, start, payload, end = decode_rle_block(data, pos, BULLETS * BLENGTH)
+                spans["bullets"] = RleSpan("bullets", start, payload, end, BULLETS * BLENGTH)
+                pos = end
+                attack_names_raw, start, payload, end = decode_rle_block(data, pos, BULLETS * 21)
+                spans["attack_names"] = RleSpan("attack_names", start, payload, end, BULLETS * 21)
+                pos = end
+            except Exception:
+                bullets_raw = bytes(BULLETS * BLENGTH)
+                attack_names_raw = bytes(BULLETS * 21)
         except Exception:
             metadata = LevelMetadata()
+            bullets_raw = bytes(BULLETS * BLENGTH)
+            attack_names_raw = bytes(BULLETS * 21)
 
         grid: List[List[Dict[str, int]]] = [[{"tile": 0, "bg": 0, "event": 0} for _ in range(LW)] for _ in range(LH)]
         for x in range(LW):
@@ -1184,6 +1296,16 @@ class JJ1Parser:
             animation_names.append(aname)
             animations.append(AnimationDefinition(i, aname, raw, length, frame_ids, frame_x, frame_y))
 
+        bullet_names: List[str] = []
+        bullet_defs: List[BulletDefinition] = []
+        for i in range(BULLETS):
+            raw = bullets_raw[i * BLENGTH:(i + 1) * BLENGTH]
+            chunk = attack_names_raw[i * 21:(i + 1) * 21]
+            n = min(chunk[0], 20) if chunk else 0
+            bname = chunk[1:1 + n].decode("ascii", errors="replace").strip("\x00") if chunk else ""
+            bullet_names.append(bname)
+            bullet_defs.append(BulletDefinition(i, bname, bytes(raw[:BLENGTH]).ljust(BLENGTH, b"\0")))
+
         path_defs: List[PathDefinition] = []
         for path_id in range(16):
             chunk = paths_raw[path_id * 512:(path_id + 1) * 512]
@@ -1203,7 +1325,7 @@ class JJ1Parser:
                 points.append((x_delta, y_delta))
             path_defs.append(PathDefinition(path_id, chunk, length, points))
 
-        return LevelData(path, data, spans, level_num, world_num, blocks_ext, grid, event_types, event_names, animations, animation_names, paths_raw, path_defs, masks_raw, metadata)
+        return LevelData(path, data, spans, level_num, world_num, blocks_ext, grid, event_types, event_names, animations, animation_names, bullet_defs, bullet_names, bullets_raw, attack_names_raw, paths_raw, path_defs, masks_raw, metadata)
 
     def load_tileset_for_level(self, level: LevelData) -> TilesetData:
         ext = f"{level.world_num:03d}" if level.blocks_ext == "999" else level.blocks_ext.zfill(3)
@@ -1359,7 +1481,7 @@ def _read_one_jj1_sprite(data: bytes, p: int, index: int, palette: List[Tuple[in
 class LevelEditorApp(tk.Tk):
     def __init__(self, game_dir: Path):
         super().__init__()
-        self.title("Jazz Jackrabbit 1 DOS Data Level Editor v23")
+        self.title("Jazz Jackrabbit 1 DOS Data Level Editor v24")
         self.geometry("1420x880")
         self.minsize(1100, 700)
 
@@ -1538,6 +1660,7 @@ class LevelEditorApp(tk.Tk):
 
         self.tabs = self.define_tabs
         self._build_animations_tab()
+        self._build_bullets_tab()
         self._build_paths_tab()
         self._build_masks_tab()
         self._build_events_tab()
@@ -2433,16 +2556,22 @@ class LevelEditorApp(tk.Tk):
     def open_bullet_picker_for(self, key: str) -> None:
         win = tk.Toplevel(self)
         win.title("Choose bullet type")
-        win.geometry("520x360")
-        columns = ("id", "meaning")
+        win.geometry("620x420")
+        columns = ("id", "name", "sprites", "finish", "behaviour")
         tree = ttk.Treeview(win, columns=columns, show="headings", selectmode="browse")
-        tree.heading("id", text="ID")
-        tree.heading("meaning", text="Meaning")
-        tree.column("id", width=50, stretch=False)
-        tree.column("meaning", width=430, stretch=True)
+        for col, width, title in [
+            ("id", 45, "ID"), ("name", 190, "Name"), ("sprites", 120, "Sprites"),
+            ("finish", 70, "Finish"), ("behaviour", 80, "Behaviour"),
+        ]:
+            tree.heading(col, text=title)
+            tree.column(col, width=width, stretch=(col == "name"))
         tree.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-        for i in range(32):
-            tree.insert("", "end", iid=str(i), values=(i, bullet_type_label(i)))
+        if self.level and getattr(self.level, "bullet_defs", None):
+            for b in self.level.bullet_defs:
+                tree.insert("", "end", iid=str(b.bullet_id), values=(b.bullet_id, bullet_display_name(b), "/".join(map(str, b.sprites)), b.finish_anim, b.behaviour))
+        else:
+            for i in range(BULLETS):
+                tree.insert("", "end", iid=str(i), values=(i, bullet_type_label(i), "", "", ""))
         def choose(_event=None):
             sel = tree.selection()
             if not sel:
@@ -2735,6 +2864,220 @@ class LevelEditorApp(tk.Tk):
         self.anim_detail_text.pack(fill=tk.BOTH, expand=False, pady=(6, 0))
 
 
+    def _build_bullets_tab(self) -> None:
+        tab = ttk.Frame(self.tabs, padding=8)
+        self.bullets_tab = tab
+        self.tabs.add(tab, text="Bullets")
+
+        body = ttk.PanedWindow(tab, orient=tk.HORIZONTAL)
+        body.pack(fill=tk.BOTH, expand=True)
+        left = ttk.Frame(body)
+        body.add(left, weight=1)
+        right = ttk.Frame(body)
+        body.add(right, weight=3)
+
+        columns = ("id", "name", "sprites", "finish", "behaviour")
+        self.bullet_tree = ttk.Treeview(left, columns=columns, show="headings", height=22, selectmode="browse")
+        for col, width, title in [
+            ("id", 42, "ID"), ("name", 150, "Name"), ("sprites", 120, "Sprites"),
+            ("finish", 70, "Finish"), ("behaviour", 70, "Behaviour"),
+        ]:
+            self.bullet_tree.heading(col, text=title)
+            self.bullet_tree.column(col, width=width, stretch=(col == "name"))
+        self.bullet_tree.pack(fill=tk.BOTH, expand=True)
+        self.bullet_tree.bind("<<TreeviewSelect>>", self.on_bullet_tree_select)
+
+        top = ttk.Frame(right)
+        top.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(top, text="Apply", command=self.apply_bullet_definition_from_ui).pack(side=tk.LEFT)
+        ttk.Button(top, text="Refresh", command=self.populate_bullets).pack(side=tk.LEFT, padx=(6, 0))
+
+        self.bullet_edit_frame = ttk.LabelFrame(right, text="Bullet definition", padding=6)
+        self.bullet_edit_frame.pack(fill=tk.X, pady=(0, 6))
+        self.bullet_edit_vars: Dict[str, Any] = {}
+        self._build_bullet_fields(self.bullet_edit_frame)
+
+        preview_frame = ttk.LabelFrame(right, text="Sprite preview", padding=6)
+        preview_frame.pack(fill=tk.BOTH, expand=True)
+        self.bullet_preview_frame = preview_frame
+
+    def _build_bullet_fields(self, parent: ttk.Frame) -> None:
+        self.bullet_edit_vars.clear()
+        row = 0
+        self.bullet_name_var = tk.StringVar(value="")
+        self.bullet_edit_vars["name"] = self.bullet_name_var
+        ttk.Label(parent, text="Name").grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(parent, textvariable=self.bullet_name_var, width=28).grid(row=row, column=1, columnspan=5, sticky="ew", pady=2)
+        row += 1
+        for i, dname in enumerate(["left", "right", "lower-left", "lower-right"]):
+            ttk.Label(parent, text=f"{dname} sprite/event").grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
+            var = tk.IntVar(value=0)
+            self.bullet_edit_vars[f"sprite_{i}"] = var
+            field = ttk.Frame(parent)
+            field.grid(row=row, column=1, sticky="w", pady=2)
+            ttk.Spinbox(field, from_=0, to=255, width=7, textvariable=var).pack(side=tk.LEFT)
+            ttk.Button(field, text="Sprite atlas…", command=lambda k=f"sprite_{i}": self.open_sprite_picker_for_bullet(k)).pack(side=tk.LEFT, padx=(4, 0))
+            ttk.Label(parent, text="x").grid(row=row, column=2, sticky="e")
+            xv = tk.IntVar(value=0)
+            self.bullet_edit_vars[f"xspeed_{i}"] = xv
+            ttk.Spinbox(parent, from_=-128, to=127, width=6, textvariable=xv).grid(row=row, column=3, sticky="w")
+            ttk.Label(parent, text="y").grid(row=row, column=4, sticky="e")
+            yv = tk.IntVar(value=0)
+            self.bullet_edit_vars[f"yspeed_{i}"] = yv
+            ttk.Spinbox(parent, from_=-128, to=127, width=6, textvariable=yv).grid(row=row, column=5, sticky="w")
+            ttk.Label(parent, text="gravity").grid(row=row, column=6, sticky="e")
+            gv = tk.IntVar(value=0)
+            self.bullet_edit_vars[f"gravity_{i}"] = gv
+            ttk.Spinbox(parent, from_=-128, to=127, width=6, textvariable=gv).grid(row=row, column=7, sticky="w")
+            row += 1
+        for key, label, frm, to in [
+            ("finish_anim", "Finish animation", 0, 127), ("finish_sound", "Finish sound", 0, 255),
+            ("behaviour", "Behaviour", 0, 255), ("start_sound", "Start sound", 0, 255),
+        ]:
+            ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
+            var = tk.IntVar(value=0)
+            self.bullet_edit_vars[key] = var
+            field = ttk.Frame(parent)
+            field.grid(row=row, column=1, sticky="w", pady=2)
+            ttk.Spinbox(field, from_=frm, to=to, width=7, textvariable=var).pack(side=tk.LEFT)
+            if key == "finish_anim":
+                ttk.Button(field, text="Atlas…", command=lambda k=key: self.open_animation_picker_for_bullet(k)).pack(side=tk.LEFT, padx=(4, 0))
+            row += 1
+
+    def populate_bullets(self) -> None:
+        if not hasattr(self, "bullet_tree"):
+            return
+        self.bullet_tree.delete(*self.bullet_tree.get_children())
+        if not self.level:
+            return
+        used = {ev.raw[12] for ev in self.level.event_catalog()[1:] if ev.raw[12]}
+        for b in self.level.bullet_defs:
+            suffix = " *used" if b.bullet_id in used else ""
+            self.bullet_tree.insert("", tk.END, iid=str(b.bullet_id), values=(b.bullet_id, bullet_display_name(b) + suffix, "/".join(map(str, b.sprites)), b.finish_anim, b.behaviour))
+        if not self.bullet_tree.selection() and self.level.bullet_defs:
+            self.bullet_tree.selection_set("0")
+            self.on_bullet_tree_select(None)
+
+    def on_bullet_tree_select(self, _event: tk.Event = None) -> None:
+        if not self.level or not hasattr(self, "bullet_tree"):
+            return
+        sel = self.bullet_tree.selection()
+        if not sel:
+            return
+        bullet_id = int(sel[0])
+        b = self.level.bullet_def(bullet_id)
+        self._editing_bullet_id = bullet_id
+        self.bullet_name_var.set(b.name)
+        for i in range(4):
+            self.bullet_edit_vars[f"sprite_{i}"].set(b.sprites[i])
+            self.bullet_edit_vars[f"xspeed_{i}"].set(b.xspeeds[i])
+            self.bullet_edit_vars[f"yspeed_{i}"].set(b.yspeeds[i])
+            self.bullet_edit_vars[f"gravity_{i}"].set(b.gravities[i])
+        self.bullet_edit_vars["finish_anim"].set(b.finish_anim)
+        self.bullet_edit_vars["finish_sound"].set(b.finish_sound)
+        self.bullet_edit_vars["behaviour"].set(b.behaviour)
+        self.bullet_edit_vars["start_sound"].set(b.start_sound)
+        self.render_bullet_preview(b)
+
+    def render_bullet_preview(self, b: BulletDefinition) -> None:
+        if not hasattr(self, "bullet_preview_frame"):
+            return
+        for child in self.bullet_preview_frame.winfo_children():
+            child.destroy()
+        self._bullet_photo_refs = []
+        ttk.Label(self.bullet_preview_frame, text=f"Bullet {b.bullet_id}: {bullet_display_name(b)}").pack(anchor="w")
+        strip = ttk.Frame(self.bullet_preview_frame)
+        strip.pack(fill=tk.X, pady=(6, 0))
+        for i, sprite_id in enumerate(b.sprites):
+            cell = ttk.LabelFrame(strip, text=bullet_direction_name(i), padding=4)
+            cell.pack(side=tk.LEFT, padx=(0, 6), anchor="n")
+            frame = self.spriteset.get(sprite_id) if self.spriteset and sprite_id else None
+            if frame:
+                img = frame.image.copy()
+                img.thumbnail((48, 48), Image.Resampling.NEAREST)
+                canvas = Image.new("RGBA", (54, 54), (0, 0, 0, 0))
+                canvas.alpha_composite(img, ((54 - img.width) // 2, (54 - img.height) // 2))
+                photo = ImageTk.PhotoImage(canvas)
+                self._bullet_photo_refs.append(photo)
+                ttk.Label(cell, image=photo).pack()
+            else:
+                ttk.Label(cell, text="no sprite").pack()
+            ttk.Label(cell, text=f"S{sprite_id}\nx={b.xspeeds[i]} y={b.yspeeds[i]}\ng={b.gravities[i]}").pack()
+
+    def apply_bullet_definition_from_ui(self) -> None:
+        if not self.level:
+            return
+        bullet_id = max(0, min(BULLETS - 1, int(getattr(self, "_editing_bullet_id", 0))))
+        raw = bytearray(BLENGTH)
+        for i in range(4):
+            raw[i] = max(0, min(255, int(self.bullet_edit_vars[f"sprite_{i}"].get())))
+            raw[4 + i] = int(self.bullet_edit_vars[f"xspeed_{i}"].get()) & 0xFF
+            raw[8 + i] = int(self.bullet_edit_vars[f"yspeed_{i}"].get()) & 0xFF
+            raw[12 + i] = int(self.bullet_edit_vars[f"gravity_{i}"].get()) & 0xFF
+        raw[16] = max(0, min(127, int(self.bullet_edit_vars["finish_anim"].get())))
+        raw[17] = max(0, min(255, int(self.bullet_edit_vars["finish_sound"].get())))
+        raw[18] = max(0, min(255, int(self.bullet_edit_vars["behaviour"].get())))
+        raw[19] = max(0, min(255, int(self.bullet_edit_vars["start_sound"].get())))
+        name = self.bullet_name_var.get().strip()[:20]
+        self.level.bullet_names[bullet_id] = name
+        self.level.bullet_defs[bullet_id] = BulletDefinition(bullet_id, name, bytes(raw))
+        self.set_dirty(True)
+        self.populate_bullets()
+        self.bullet_tree.selection_set(str(bullet_id))
+        self.on_bullet_tree_select(None)
+        self.status.set(f"Applied bullet definition {bullet_id}.")
+
+    def open_sprite_picker_for_bullet(self, key: str) -> None:
+        if not self.spriteset:
+            return
+        win = tk.Toplevel(self)
+        win.title(f"Choose sprite for {key}")
+        win.geometry("900x640")
+        canvas = tk.Canvas(win, background="#181818", highlightthickness=0)
+        yscroll = ttk.Scrollbar(win, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=yscroll.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        yscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        refs: List[ImageTk.PhotoImage] = []
+        cell = 72
+        cols = 12
+        for sid, frame in enumerate(self.spriteset.sprites[:256]):
+            x = (sid % cols) * cell
+            y = (sid // cols) * cell
+            tag = f"sprite_pick_{sid}"
+            canvas.create_rectangle(x + 2, y + 2, x + cell - 2, y + cell - 2, fill="#202020", outline="#555555", tags=(tag, f"{tag}_bg"))
+            canvas.create_text(x + 4, y + 4, text=f"S{sid}", fill="#ffff80", anchor="nw", tags=(tag,))
+            if frame:
+                img = frame.image.copy()
+                img.thumbnail((40, 40), Image.Resampling.NEAREST)
+                photo = ImageTk.PhotoImage(img)
+                refs.append(photo)
+                canvas.create_image(x + cell // 2, y + 42, image=photo, anchor="center", tags=(tag,))
+            def hover_on(_e, t=tag):
+                canvas.itemconfigure(f"{t}_bg", fill="#303030", outline="#ffff00", width=3)
+                canvas.config(cursor="hand2")
+            def hover_off(_e, t=tag):
+                canvas.itemconfigure(f"{t}_bg", fill="#202020", outline="#555555", width=1)
+                canvas.config(cursor="")
+            def choose(_e, sprite_id=sid):
+                self.bullet_edit_vars[key].set(sprite_id)
+                win.destroy()
+            canvas.tag_bind(tag, "<Enter>", hover_on)
+            canvas.tag_bind(tag, "<Leave>", hover_off)
+            canvas.tag_bind(tag, "<Button-1>", choose)
+        canvas.configure(scrollregion=(0, 0, cols * cell, ((256 + cols - 1) // cols) * cell))
+        win._photo_refs = refs
+
+    def open_animation_picker_for_bullet(self, key: str) -> None:
+        if not self.level:
+            return
+        original_vars = getattr(self, "event_concept_vars", None)
+        self.event_concept_vars = self.bullet_edit_vars
+        try:
+            self.open_animation_picker_for(key)
+        finally:
+            self.event_concept_vars = original_vars if original_vars is not None else {}
+
     def _build_paths_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(tab, text="Paths")
@@ -2790,9 +3133,9 @@ class LevelEditorApp(tk.Tk):
         if self.level:
             mark = "*" if self.dirty else ""
             save_path = self.current_save_path.name if self.current_save_path else self.level.path.name
-            self.title(f"Jazz Jackrabbit 1 DOS Data Level Editor v23{mark} - {save_path}")
+            self.title(f"Jazz Jackrabbit 1 DOS Data Level Editor v24{mark} - {save_path}")
         else:
-            self.title("Jazz Jackrabbit 1 DOS Data Level Editor v23")
+            self.title("Jazz Jackrabbit 1 DOS Data Level Editor v24")
 
     def maybe_save_changes(self, action: str = "continue") -> bool:
         if not self.dirty or not self.level:
@@ -2863,6 +3206,7 @@ class LevelEditorApp(tk.Tk):
         self.render_atlas()
         self.render_event_definition(0)
         self.populate_animations()
+        self.populate_bullets()
         self.populate_paths()
         self.render_mask_info(0)
         self.refresh_validation()
@@ -4435,6 +4779,7 @@ class LevelEditorApp(tk.Tk):
                 save_paths=True,
                 save_masks=True,
                 save_animations=True,
+                save_bullets=True,
             )
         except Exception as exc:
             messagebox.showerror("Save failed", str(exc))

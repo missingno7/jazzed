@@ -1,4 +1,29 @@
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
+===========================================
+
+Level-local Bullet Editor release:
+
+- Added `LEVEL LOCAL -> Bullets`.
+- The parser now reads the real JJ1 level-local bullet table:
+  - 32 bullet definitions
+  - 20 bytes each
+  - plus 32 attack names of 21 bytes each
+- Bullet editor exposes:
+  - left/right/lower-left/lower-right sprite/event refs
+  - x speed
+  - y speed
+  - gravity
+  - finish animation
+  - finish sound
+  - behaviour
+  - start sound
+  - attack name
+- Bullet sprite fields have a visual sprite atlas picker.
+- Finish animation has an animation atlas picker.
+- `EVENT DEFS` bullet picker now lists real level-local bullet definitions instead of only generic bullet IDs.
+- Save writes bullet definitions and attack names back to the level file.
+
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===========================================
 
 Reliable Animation Picker release:
@@ -11,7 +36,7 @@ Reliable Animation Picker release:
 - Double-click also selects it.
 - This should fix the intermittent issue where animation cells only clicked after moving/resizing the window.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===========================================
 
 Animation/Bullet picker cleanup:
@@ -25,9 +50,9 @@ Animation/Bullet picker cleanup:
 - Bullet picker shows human-readable bullet slot labels where known and generic labels otherwise.
 - Interpretation panel now shows bullet type labels instead of just a raw number.
 
-Note: the full JJ1 level-local bullet table decoder is still a future research step; v23 adds the semantic UI layer and picker first.
+Note: the full JJ1 level-local bullet table decoder is still a future research step; v24 adds the semantic UI layer and picker first.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===========================================
 
 Event Definitions Workspace release:
@@ -43,7 +68,7 @@ Event Definitions Workspace release:
 - Added animation picker buttons (`Atlas…`) next to animation fields in the concept editor.
 - `New type` now creates a truly empty/unused event definition, then lets you choose the concept.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===========================================
 
 Concept Object Type Editor release:
@@ -76,7 +101,7 @@ Concept Object Type Editor release:
   - Event 14 is interpreted as shootable pickup/container.
   - Reserved events 122/126 remain engine marker events.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===========================================
 
 Semantic Event Definition Editor release:
@@ -94,7 +119,7 @@ Semantic Event Definition Editor release:
 - Weapon/ammo modifier meanings are shown explicitly, e.g. weapon 0/1/2/3 ammo amounts and TNT.
 - Save writes the modified level-local event definitions directly; there is no separate “save modified event defs” checkbox.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===========================================
 
 UI cleanup release:
@@ -111,7 +136,7 @@ UI cleanup release:
   - selecting a palette item is enough; `Use selected as brush` remains for selected map objects.
 - Reduced explanatory text/noise in the UI.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===========================================
 
 WYSIWYG brush preview + normal save release:
@@ -124,7 +149,7 @@ WYSIWYG brush preview + normal save release:
 - The window title shows `*` when the level has unsaved changes.
 - Loading another level, reloading, opening another game dir, or closing the window now asks whether to save unsaved changes.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===========================================
 
 Reserved engine marker event release:
@@ -140,7 +165,7 @@ Reserved engine marker event release:
 - Reserved marker tooltips explain that behavior is tied to the numeric event ID, not to a cloneable 32-byte event definition.
 - Reserved markers still remain visible/selectable as event placements, because they are real event IDs stored in the original DOS level grid.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===========================================
 
 Rendering / overlay cleanup release:
@@ -151,7 +176,7 @@ Rendering / overlay cleanup release:
 - Background color is taken from the loaded tileset palette and used as the canvas/base map background.
 - LEVEL LOCAL child tabs are now named simply `Event defs`, `Animations`, `Paths`, `Masks`, etc.; the parent workspace already says LEVEL LOCAL.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===========================================
 
 UX cleanup release:
@@ -165,7 +190,7 @@ UX cleanup release:
   - Shift+right-click or middle-click still picks values.
 - Tile atlas wraps dynamically according to the Build panel width.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===========================================
 
 This editor targets the **original Jazz Jackrabbit 1 DOS data files**, not an OpenJazz-specific project format.
@@ -193,7 +218,7 @@ Run:
 python jazz1_dos_level_editor.py /path/to/JAZZ_DOS_DIRECTORY
 ```
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===============================
 
 Scope separation release:
@@ -204,7 +229,7 @@ Scope separation release:
 
 This version renames the previous ambiguous “global” tabs to **Level Local** and adds a separate **Game Globals** workspace.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ===============================
 
 Performance/UX release:
@@ -215,7 +240,7 @@ Performance/UX release:
 - brush ghost/preview on hover,
 - clearer stroke status showing what is being placed and how many cells changed.
 
-Jazz Jackrabbit 1 DOS Data Level Editor v23
+Jazz Jackrabbit 1 DOS Data Level Editor v24
 ==============================
 
 This version reorganizes the editor into two main workspaces:
@@ -223,7 +248,7 @@ This version reorganizes the editor into two main workspaces:
 - **BUILD - place things**: WYSIWYG level construction, object prefabs, tiles, start marker and layers.
 - **DEFINE - object types**: level-local event/object type authoring, event definitions, animations, paths, masks and validation.
 
-# Jazz Jackrabbit 1 DOS Data Level Editor v23
+# Jazz Jackrabbit 1 DOS Data Level Editor v24
 
 Standalone WYSIWYG-oriented GUI prototype for editing Jazz Jackrabbit 1 DOS/OpenJazz/reference levels.
 
@@ -234,7 +259,7 @@ python -m pip install pillow
 python jazz1_dos_level_editor.py /path/to/JAZZ
 ```
 
-## What v23 focuses on
+## What v24 focuses on
 
 This version makes the editor less raw-byte-centric and more WYSIWYG:
 
@@ -258,7 +283,7 @@ The editor separates four concepts:
 
 ## Important JJ1 detail
 
-Event definitions, animations, paths and masks are not global game-wide object definitions. They are shared tables inside each level. So v23 uses terms like **Object Types** and **Level Definitions** rather than treating event 17 as a universal object across the whole game.
+Event definitions, animations, paths and masks are not global game-wide object definitions. They are shared tables inside each level. So v24 uses terms like **Object Types** and **Level Definitions** rather than treating event 17 as a universal object across the whole game.
 
 ## Save strategy
 
