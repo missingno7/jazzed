@@ -1,0 +1,15 @@
+[project]
+name = "jazzed"
+version = "0.1.0"
+description = "Desktop level editor for original DOS Jazz Jackrabbit 1 data files"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow>=10.0",
+]
+
+[project.scripts]
+jazzed = "jazzed_editor.app:main"
+
+[tool.setuptools]
+packages = ["jazzed_editor", "jazzed_editor.raw"]

@@ -1,3 +1,29 @@
-__pycache__
-openjazz
-game_data
+# Local copyrighted/reference data
+game_data/*
+!game_data/README.md
+openjazz/
+OpenJazz/
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build/package output
+build/
+dist/
+*.egg-info/
+
+# Editor/OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
