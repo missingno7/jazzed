@@ -22,26 +22,75 @@ class LevelLocalMixin:
         tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(tab, text="Animations")
         self.global_animations_tab = tab
-        ttk.Label(tab, text="Animation preview is used to turn raw event IDs into readable objects where possible. Animation definitions are global for this level.").pack(anchor="w")
-        ttk.Checkbutton(tab, text="Save modified level-local animations", variable=self.save_animations_var).pack(anchor="w", pady=(4, 0))
+
+        body = ttk.PanedWindow(tab, orient=tk.HORIZONTAL)
+        body.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        left = ttk.Frame(body)
+        right = ttk.Frame(body)
+        body.add(left, weight=1)
+        body.add(right, weight=3)
+
         columns = ("anim", "name", "len", "frames")
-        self.anim_tree = ttk.Treeview(tab, columns=columns, show="headings", height=10, selectmode="browse")
-        for col, width, text in [("anim", 55, "Anim"), ("name", 135, "Name"), ("len", 42, "Len"), ("frames", 180, "Sprite frames")]:
+        self.anim_tree = ttk.Treeview(left, columns=columns, show="headings", height=24, selectmode="browse")
+        for col, width, text in [("anim", 55, "Anim"), ("name", 140, "Name"), ("len", 42, "Len"), ("frames", 170, "Sprite frames")]:
             self.anim_tree.heading(col, text=text)
             self.anim_tree.column(col, width=width, stretch=(col == "frames"))
-        self.anim_tree.pack(fill=tk.BOTH, expand=True, pady=(6, 4))
+        self.anim_tree.pack(fill=tk.BOTH, expand=True)
         self.anim_tree.bind("<<TreeviewSelect>>", self.on_anim_tree_select)
-        self.anim_preview_frame = ttk.Frame(tab)
-        self.anim_preview_frame.pack(fill=tk.X, pady=(4, 0))
-        self.anim_preview_labels: List[ttk.Label] = []
-        edit_row = ttk.Frame(tab)
-        edit_row.pack(fill=tk.X, pady=(6, 0))
-        ttk.Button(edit_row, text="Apply animation frame list", command=self.apply_animation_from_ui).pack(side=tk.LEFT)
-        ttk.Label(edit_row, text="One frame per line: sprite_id x_offset y_offset").pack(side=tk.LEFT, padx=(8, 0))
-        self.anim_edit_text = tk.Text(tab, height=5, wrap="none")
-        self.anim_edit_text.pack(fill=tk.BOTH, expand=False, pady=(4, 0))
-        self.anim_detail_text = tk.Text(tab, height=8, wrap="word")
-        self.anim_detail_text.pack(fill=tk.BOTH, expand=False, pady=(6, 0))
+
+        toolbar = ttk.Frame(right)
+        toolbar.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(toolbar, text="Apply", command=self.apply_animation_from_ui).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="Refresh", command=self.populate_animations).pack(side=tk.LEFT, padx=(6, 0))
+
+        meta = ttk.LabelFrame(right, text="Animation", padding=6)
+        meta.pack(fill=tk.X, pady=(0, 6))
+        self.anim_name_var = tk.StringVar(value="")
+        ttk.Label(meta, text="Name").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Entry(meta, textvariable=self.anim_name_var, width=28).grid(row=0, column=1, sticky="ew")
+        self.anim_length_label = ttk.Label(meta, text="Frames: 0 / 19")
+        self.anim_length_label.grid(row=0, column=2, sticky="w", padx=(12, 0))
+        meta.columnconfigure(1, weight=1)
+
+        preview = ttk.LabelFrame(right, text="Preview", padding=6)
+        preview.pack(fill=tk.X, pady=(0, 6))
+        self.anim_preview_canvas = tk.Canvas(preview, height=116, background="#181818", highlightthickness=0)
+        self.anim_preview_canvas.pack(fill=tk.X)
+        self.anim_preview_canvas.bind("<Configure>", lambda _e: self.render_animation_preview())
+
+        frame_box = ttk.LabelFrame(right, text="Frames", padding=6)
+        frame_box.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        frame_tools = ttk.Frame(frame_box)
+        frame_tools.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(frame_tools, text="Add from sprite atlas", command=self.add_animation_frame_from_atlas).pack(side=tk.LEFT)
+        ttk.Button(frame_tools, text="Remove", command=self.remove_selected_animation_frame).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(frame_tools, text="Move up", command=lambda: self.move_selected_animation_frame(-1)).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(frame_tools, text="Move down", command=lambda: self.move_selected_animation_frame(1)).pack(side=tk.LEFT, padx=(6, 0))
+
+        frame_columns = ("index", "sprite", "x", "y")
+        self.anim_frame_tree = ttk.Treeview(frame_box, columns=frame_columns, show="headings", height=8, selectmode="browse")
+        for col, width, text in [("index", 52, "#"), ("sprite", 74, "Sprite"), ("x", 70, "X offset"), ("y", 70, "Y offset")]:
+            self.anim_frame_tree.heading(col, text=text)
+            self.anim_frame_tree.column(col, width=width, stretch=False)
+        self.anim_frame_tree.pack(fill=tk.BOTH, expand=True)
+        self.anim_frame_tree.bind("<<TreeviewSelect>>", self.on_anim_frame_select)
+
+        frame_edit = ttk.Frame(frame_box)
+        frame_edit.pack(fill=tk.X, pady=(6, 0))
+        self.anim_frame_sprite_var = tk.IntVar(value=0)
+        self.anim_frame_x_var = tk.IntVar(value=0)
+        self.anim_frame_y_var = tk.IntVar(value=0)
+        ttk.Label(frame_edit, text="Sprite").pack(side=tk.LEFT)
+        ttk.Spinbox(frame_edit, from_=0, to=255, width=7, textvariable=self.anim_frame_sprite_var).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(frame_edit, text="Atlas...", command=self.pick_sprite_for_selected_animation_frame).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(frame_edit, text="X offset").pack(side=tk.LEFT)
+        ttk.Spinbox(frame_edit, from_=-128, to=127, width=7, textvariable=self.anim_frame_x_var).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(frame_edit, text="Y offset").pack(side=tk.LEFT)
+        ttk.Spinbox(frame_edit, from_=-128, to=127, width=7, textvariable=self.anim_frame_y_var).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Button(frame_edit, text="Update frame", command=self.update_selected_animation_frame).pack(side=tk.LEFT)
+
+        self.anim_detail_text = tk.Text(right, height=6, wrap="word")
+        self.anim_detail_text.pack(fill=tk.BOTH, expand=False)
 
     def _build_bullets_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=8)
@@ -314,7 +363,7 @@ class LevelLocalMixin:
             self.anim_tree.insert("", tk.END, iid=str(anim.anim_id), values=(anim.anim_id, (anim.name or "") + suffix, anim.length, ",".join(map(str, anim.frame_ids))))
 
     def on_anim_tree_select(self, _event: tk.Event) -> None:
-        if not self.level or not self.spriteset:
+        if not self.level:
             return
         selection = self.anim_tree.selection()
         if not selection:
@@ -323,25 +372,11 @@ class LevelLocalMixin:
         anim = self.level.animation(anim_id)
         if not anim:
             return
-        for child in self.anim_preview_frame.winfo_children():
-            child.destroy()
-        self._sprite_photo_refs = []
-        ttk.Label(self.anim_preview_frame, text=f"Animation {anim_id}: {anim.name or '(unnamed)'}").pack(anchor="w")
-        strip = ttk.Frame(self.anim_preview_frame)
-        strip.pack(fill=tk.X, pady=(4, 0))
-        for n, frame_id in enumerate(anim.frame_ids[:12]):
-            frame = self.spriteset.get(frame_id)
-            if frame:
-                img = frame.image.copy()
-                img.thumbnail((48, 48), Image.Resampling.NEAREST)
-                canvas = Image.new("RGBA", (54, 64), (0, 0, 0, 0))
-                canvas.alpha_composite(img, ((54 - img.width) // 2, 0))
-                photo = ImageTk.PhotoImage(canvas)
-                self._sprite_photo_refs.append(photo)
-                lbl = ttk.Label(strip, image=photo, text=f"#{n}\nS{frame_id}", compound=tk.TOP)
-                lbl.pack(side=tk.LEFT, padx=(0, 4))
-        self.anim_edit_text.delete("1.0", tk.END)
-        self.anim_edit_text.insert("1.0", "\n".join(f"{f} {x} {y}" for f, x, y in zip(anim.frame_ids, anim.frame_x, anim.frame_y)))
+        self._editing_anim_id = anim_id
+        if hasattr(self, "anim_name_var"):
+            self.anim_name_var.set(anim.name or "")
+        self.populate_animation_frame_tree(anim)
+        self.render_animation_preview()
         details = [
             f"Animation {anim_id}",
             f"name: {anim.name or '(unnamed)'}",
@@ -366,6 +401,187 @@ class LevelLocalMixin:
         self.anim_detail_text.delete("1.0", tk.END)
         self.anim_detail_text.insert("1.0", "\n".join(details))
         self.anim_detail_text.configure(state="disabled")
+
+    def populate_animation_frame_tree(self, anim: AnimationDefinition) -> None:
+        if not hasattr(self, "anim_frame_tree"):
+            return
+        self.anim_frame_tree.delete(*self.anim_frame_tree.get_children())
+        for i, (sprite_id, xoff, yoff) in enumerate(zip(anim.frame_ids, anim.frame_x, anim.frame_y)):
+            self.anim_frame_tree.insert("", tk.END, iid=str(i), values=(i, sprite_id, xoff, yoff))
+        if hasattr(self, "anim_length_label"):
+            self.anim_length_label.configure(text=f"Frames: {anim.length} / 19")
+        if anim.length:
+            self.anim_frame_tree.selection_set("0")
+            self.on_anim_frame_select(None)
+
+    def _animation_frame_rows_from_tree(self) -> List[Tuple[int, int, int]]:
+        rows: List[Tuple[int, int, int]] = []
+        if not hasattr(self, "anim_frame_tree"):
+            return rows
+        for item in self.anim_frame_tree.get_children():
+            values = self.anim_frame_tree.item(item, "values")
+            if len(values) >= 4:
+                rows.append((int(values[1]), int(values[2]), int(values[3])))
+        return rows
+
+    def _rebuild_animation_frame_tree(self, rows: List[Tuple[int, int, int]], select_index: Optional[int] = None) -> None:
+        self.anim_frame_tree.delete(*self.anim_frame_tree.get_children())
+        for i, (sprite_id, xoff, yoff) in enumerate(rows[:19]):
+            self.anim_frame_tree.insert("", tk.END, iid=str(i), values=(i, sprite_id, xoff, yoff))
+        if hasattr(self, "anim_length_label"):
+            self.anim_length_label.configure(text=f"Frames: {len(rows[:19])} / 19")
+        if rows:
+            idx = 0 if select_index is None else max(0, min(len(rows[:19]) - 1, select_index))
+            self.anim_frame_tree.selection_set(str(idx))
+            self.on_anim_frame_select(None)
+        self.render_animation_preview()
+
+    def on_anim_frame_select(self, _event: tk.Event = None) -> None:
+        if not hasattr(self, "anim_frame_tree"):
+            return
+        sel = self.anim_frame_tree.selection()
+        if not sel:
+            return
+        values = self.anim_frame_tree.item(sel[0], "values")
+        if len(values) >= 4:
+            self.anim_frame_sprite_var.set(int(values[1]))
+            self.anim_frame_x_var.set(int(values[2]))
+            self.anim_frame_y_var.set(int(values[3]))
+
+    def update_selected_animation_frame(self) -> None:
+        sel = self.anim_frame_tree.selection() if hasattr(self, "anim_frame_tree") else ()
+        if not sel:
+            return
+        idx = int(sel[0])
+        rows = self._animation_frame_rows_from_tree()
+        if 0 <= idx < len(rows):
+            rows[idx] = (
+                max(0, min(255, int(self.anim_frame_sprite_var.get()))),
+                max(-128, min(127, int(self.anim_frame_x_var.get()))),
+                max(-128, min(127, int(self.anim_frame_y_var.get()))),
+            )
+            self._rebuild_animation_frame_tree(rows, idx)
+
+    def add_animation_frame_from_atlas(self) -> None:
+        self.open_sprite_picker_for_animation(lambda sprite_id: self._append_animation_frame(sprite_id))
+
+    def _append_animation_frame(self, sprite_id: int) -> None:
+        rows = self._animation_frame_rows_from_tree()
+        if len(rows) >= 19:
+            messagebox.showinfo("Animation", "JJ1 animation definitions can store at most 19 frames.")
+            return
+        rows.append((max(0, min(255, int(sprite_id))), 0, 0))
+        self._rebuild_animation_frame_tree(rows, len(rows) - 1)
+
+    def pick_sprite_for_selected_animation_frame(self) -> None:
+        sel = self.anim_frame_tree.selection() if hasattr(self, "anim_frame_tree") else ()
+        if not sel:
+            return
+        idx = int(sel[0])
+        self.open_sprite_picker_for_animation(lambda sprite_id: self._set_animation_frame_sprite(idx, sprite_id))
+
+    def _set_animation_frame_sprite(self, idx: int, sprite_id: int) -> None:
+        rows = self._animation_frame_rows_from_tree()
+        if 0 <= idx < len(rows):
+            _old, xoff, yoff = rows[idx]
+            rows[idx] = (max(0, min(255, int(sprite_id))), xoff, yoff)
+            self._rebuild_animation_frame_tree(rows, idx)
+
+    def remove_selected_animation_frame(self) -> None:
+        sel = self.anim_frame_tree.selection() if hasattr(self, "anim_frame_tree") else ()
+        if not sel:
+            return
+        idx = int(sel[0])
+        rows = self._animation_frame_rows_from_tree()
+        if 0 <= idx < len(rows):
+            rows.pop(idx)
+            self._rebuild_animation_frame_tree(rows, min(idx, len(rows) - 1) if rows else None)
+
+    def move_selected_animation_frame(self, delta: int) -> None:
+        sel = self.anim_frame_tree.selection() if hasattr(self, "anim_frame_tree") else ()
+        if not sel:
+            return
+        idx = int(sel[0])
+        rows = self._animation_frame_rows_from_tree()
+        new_idx = idx + int(delta)
+        if 0 <= idx < len(rows) and 0 <= new_idx < len(rows):
+            rows[idx], rows[new_idx] = rows[new_idx], rows[idx]
+            self._rebuild_animation_frame_tree(rows, new_idx)
+
+    def render_animation_preview(self) -> None:
+        if not hasattr(self, "anim_preview_canvas"):
+            return
+        canvas = self.anim_preview_canvas
+        canvas.delete("all")
+        self._anim_preview_photo_refs = []
+        rows = self._animation_frame_rows_from_tree()
+        canvas.create_line(0, 78, max(500, canvas.winfo_width()), 78, fill="#383838")
+        if not rows:
+            canvas.create_text(12, 18, text="Empty animation", fill="#dddddd", anchor="w")
+            return
+        cell = 72
+        for i, (sprite_id, xoff, yoff) in enumerate(rows[:12]):
+            x = 8 + i * cell
+            origin_x = x + 34
+            origin_y = 78
+            canvas.create_line(origin_x - 8, origin_y, origin_x + 8, origin_y, fill="#606060")
+            canvas.create_line(origin_x, origin_y - 8, origin_x, origin_y + 8, fill="#606060")
+            frame = self.spriteset.get(sprite_id) if self.spriteset and sprite_id else None
+            if frame:
+                img = frame.image.copy()
+                img.thumbnail((48, 48), Image.Resampling.NEAREST)
+                photo = ImageTk.PhotoImage(img)
+                self._anim_preview_photo_refs.append(photo)
+                canvas.create_image(origin_x + xoff, origin_y + yoff, image=photo, anchor="s")
+            else:
+                canvas.create_rectangle(origin_x - 16 + xoff, origin_y - 32 + yoff, origin_x + 16 + xoff, origin_y + yoff, outline="#777777")
+                canvas.create_text(origin_x + xoff, origin_y - 16 + yoff, text=f"S{sprite_id}", fill="#888888")
+            canvas.create_text(x + 4, 8, text=f"#{i}", fill="#ffff80", anchor="nw")
+            canvas.create_text(x + 4, 96, text=f"x{xoff} y{yoff}", fill="#b8b8b8", anchor="nw")
+
+    def open_sprite_picker_for_animation(self, callback) -> None:
+        if not self.spriteset:
+            return
+        win = tk.Toplevel(self)
+        win.title("Choose animation sprite frame")
+        win.geometry("900x640")
+        canvas = tk.Canvas(win, background="#181818", highlightthickness=0)
+        yscroll = ttk.Scrollbar(win, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=yscroll.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        yscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        refs: List[ImageTk.PhotoImage] = []
+        cell = 72
+        cols = 12
+        for sid, frame in enumerate(self.spriteset.sprites[:256]):
+            x = (sid % cols) * cell
+            y = (sid // cols) * cell
+            tag = f"anim_sprite_pick_{sid}"
+            canvas.create_rectangle(x + 2, y + 2, x + cell - 2, y + cell - 2, fill="#202020", outline="#555555", tags=(tag, f"{tag}_bg"))
+            canvas.create_text(x + 4, y + 4, text=f"S{sid}", fill="#ffff80", anchor="nw", tags=(tag,))
+            if frame:
+                img = frame.image.copy()
+                img.thumbnail((42, 42), Image.Resampling.NEAREST)
+                photo = ImageTk.PhotoImage(img)
+                refs.append(photo)
+                canvas.create_image(x + cell // 2, y + 42, image=photo, anchor="center", tags=(tag,))
+            else:
+                canvas.create_text(x + cell // 2, y + 42, text="empty", fill="#666666", anchor="center", tags=(tag,))
+            def hover_on(_e, t=tag):
+                canvas.itemconfigure(f"{t}_bg", fill="#303030", outline="#ffff00", width=3)
+                canvas.config(cursor="hand2")
+            def hover_off(_e, t=tag):
+                canvas.itemconfigure(f"{t}_bg", fill="#202020", outline="#555555", width=1)
+                canvas.config(cursor="")
+            def choose(_e, sprite_id=sid):
+                callback(sprite_id)
+                win.destroy()
+            canvas.tag_bind(tag, "<Enter>", hover_on)
+            canvas.tag_bind(tag, "<Leave>", hover_off)
+            canvas.tag_bind(tag, "<Button-1>", choose)
+            canvas.tag_bind(tag, "<Double-1>", choose)
+        canvas.configure(scrollregion=(0, 0, cols * cell, ((256 + cols - 1) // cols) * cell))
+        win._photo_refs = refs
 
     def populate_paths(self) -> None:
         if not hasattr(self, "path_combo"):
@@ -499,30 +715,16 @@ class LevelLocalMixin:
         self.status.set(f"Edited level-local collision mask for tile {tile}.")
 
     def apply_animation_from_ui(self) -> None:
-        if not self.level or not hasattr(self, "anim_tree") or not hasattr(self, "anim_edit_text"):
+        if not self.level or not hasattr(self, "anim_tree"):
             return
         selection = self.anim_tree.selection()
         if not selection:
             messagebox.showinfo("Animation", "Select an animation first.")
             return
         anim_id = int(selection[0])
-        frames: List[Tuple[int, int, int]] = []
-        for line_no, line in enumerate(self.anim_edit_text.get("1.0", tk.END).splitlines(), 1):
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            parts = line.replace(",", " ").split()
-            if len(parts) < 1:
-                continue
-            try:
-                frame = int(float(parts[0]))
-                xoff = int(float(parts[1])) if len(parts) > 1 else 0
-                yoff = int(float(parts[2])) if len(parts) > 2 else 0
-            except ValueError:
-                messagebox.showerror("Invalid animation", f"Line {line_no}: expected sprite_id x_offset y_offset")
-                return
-            frames.append((frame, xoff, yoff))
-        self.level.set_animation_frames(anim_id, frames)
+        frames = self._animation_frame_rows_from_tree()
+        name = self.anim_name_var.get().strip()[:LONGNAME - 1] if hasattr(self, "anim_name_var") else None
+        self.level.set_animation_frames(anim_id, frames, name=name)
         self.set_dirty(True)
         self._event_preview_cache.clear()
         self.populate_animations()

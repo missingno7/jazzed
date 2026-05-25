@@ -78,7 +78,6 @@ class LevelEditorApp(
         self.save_event_defs_var = tk.BooleanVar(value=False)
         self.save_paths_var = tk.BooleanVar(value=False)
         self.save_masks_var = tk.BooleanVar(value=False)
-        self.save_animations_var = tk.BooleanVar(value=False)
         self.object_category_filter = tk.StringVar(value="all")
         self.object_palette_view = tk.StringVar(value="atlas")
         self.selected_path = tk.IntVar(value=0)
@@ -292,7 +291,6 @@ class LevelEditorApp(
 
 
         # Reserved markers are numeric IDs, not a cloneable raw template.
-
 
 
 

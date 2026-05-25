@@ -14,7 +14,7 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
 
 from ..raw_data import *
-from ..raw.event_semantics import _first_modifier_for_pickup
+from ..raw.event_semantics import _first_modifier_for_pickup, difficulty_badge, event_force_overlay
 from ..raw.sprites import _signed_byte
 
 class ObjectsMixin:
@@ -178,7 +178,7 @@ class ObjectsMixin:
                 self._object_atlas_photo_refs.append(photo)
                 canvas.create_image(x + cell_w // 2, y + 39, image=photo, anchor="center", tags=(tag,))
             else:
-                canvas.create_text(x + cell_w // 2, y + 39, text="no sprite", fill="#777777", anchor="center", tags=(tag,))
+                self._draw_event_visual_fallback(canvas, x + 26, y + 22, 44, event_id, evdef.raw, tag)
             name = friendly_event_name(evdef)[:13]
             canvas.create_text(x + 8, y + 66, text=name, fill="#dddddd", anchor="nw", tags=(tag,))
             canvas.tag_bind(tag, "<Enter>", lambda _e, t=tag: set_hover(t, True))
@@ -189,14 +189,45 @@ class ObjectsMixin:
         rows = max(1, (len(visible) + cols - 1) // cols)
         canvas.configure(scrollregion=(0, 0, cols * cell_w, rows * cell_h))
 
+    def _draw_event_visual_fallback(self, canvas: tk.Canvas, x: int, y: int, size: int, event_id: int, raw: bytes, tag: str) -> None:
+        canvas.create_rectangle(x, y, x + size, y + size, fill="#101010", outline="#505050", tags=(tag,))
+        if event_id == 122:
+            line_y = y + int(size * 0.34)
+            canvas.create_line(x + 6, line_y, x + size - 6, line_y, fill="#66ffcc", width=3, tags=(tag,))
+            canvas.create_line(x + size * 0.35, y + size - 8, x + size * 0.35, line_y + 3, fill="#66ffcc", width=2, arrow=tk.LAST, tags=(tag,))
+            canvas.create_line(x + size * 0.65, y + size - 8, x + size * 0.65, line_y + 3, fill="#66ffcc", width=2, arrow=tk.LAST, tags=(tag,))
+        elif event_id == 124:
+            canvas.create_rectangle(x + 4, y + 4, x + size - 4, y + size - 4, fill="#000000", stipple="gray50", outline="#80ffff", width=2, tags=(tag,))
+            canvas.create_text(x + size // 2, y + size // 2, text="124", fill="#80ffff", anchor="center", tags=(tag,))
+        else:
+            force = event_force_overlay(raw)
+            if force:
+                dx = int(force["dx"])
+                dy = int(force["dy"])
+                color = str(force.get("color", "#50e6ff"))
+                cx = x + size // 2
+                cy = y + size // 2
+                canvas.create_line(cx - dx * 8, cy - dy * 8, cx + dx * 15, cy + dy * 15, fill=color, width=3, arrow=tk.LAST, tags=(tag,))
+            else:
+                canvas.create_text(x + size // 2, y + size // 2, text=f"E{event_id}", fill="#888888", anchor="center", tags=(tag,))
+        if raw and raw[0] > 0:
+            canvas.create_rectangle(x + size - 15, y + 2, x + size - 2, y + 15, fill="#000000", outline="#ffff80", tags=(tag,))
+            canvas.create_text(x + size - 8, y + 8, text=difficulty_badge(raw[0]), fill="#ffff80", anchor="center", tags=(tag,))
+
     def select_palette_event(self, event_id: int, use_as_brush: bool = False) -> None:
         if not self.level:
             return
         self.current_event.set(event_id)
         self.tool_mode.set("events")
         if hasattr(self, "palette_tree") and str(event_id) in self.palette_tree.get_children():
-            self.palette_tree.selection_set(str(event_id))
-            self.palette_tree.see(str(event_id))
+            current = set(self.palette_tree.selection())
+            if current != {str(event_id)}:
+                self._suppress_palette_select = True
+                try:
+                    self.palette_tree.selection_set(str(event_id))
+                    self.palette_tree.see(str(event_id))
+                finally:
+                    self._suppress_palette_select = False
         self.render_event_definition(event_id)
         self.highlight_event_id.set(event_id)
         photo = self.render_event_icon(event_id, 32)
@@ -215,6 +246,8 @@ class ObjectsMixin:
             self.status.set(f"Selected object palette event {event_id}: {self.event_display_name(event_id)}. Click the map in Events mode to place it.")
 
     def on_palette_tree_select(self, _event: tk.Event) -> None:
+        if getattr(self, "_suppress_palette_select", False):
+            return
         selection = self.palette_tree.selection()
         if not selection:
             return

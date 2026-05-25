@@ -309,6 +309,15 @@ class LevelData:
             out[i * 64:(i + 1) * 64] = bytes(raw[:64]).ljust(64, b"\0")
         return bytes(out)
 
+    def animation_names_to_bytes(self) -> bytes:
+        out = bytearray(ANIMS * LONGNAME)
+        for i in range(ANIMS):
+            name = self.animation_names[i] if i < len(self.animation_names) else ""
+            data = name.encode("ascii", errors="replace")[:LONGNAME - 1]
+            out[i * LONGNAME] = len(data)
+            out[i * LONGNAME + 1:i * LONGNAME + 1 + len(data)] = data
+        return bytes(out)
+
     def set_path_points(self, path_id: int, points: List[Tuple[int, int]]) -> None:
         path_id = max(0, min(15, int(path_id)))
         points = points[:240]
@@ -346,7 +355,7 @@ class LevelData:
             raw[start + y] = byte
         self.masks = bytes(raw)
 
-    def set_animation_frames(self, anim_id: int, frames: List[Tuple[int, int, int]]) -> None:
+    def set_animation_frames(self, anim_id: int, frames: List[Tuple[int, int, int]], name: Optional[str] = None) -> None:
         anim_id = max(0, min(ANIMS - 1, int(anim_id)))
         frames = frames[:19]
         old = bytearray(self.animations[anim_id].raw if anim_id < len(self.animations) else bytes(64))
@@ -359,10 +368,14 @@ class LevelData:
             old[7 + i] = max(0, min(255, int(frame_id)))
             old[26 + i] = max(-128, min(127, int(xoff))) & 0xFF
             old[45 + i] = max(-128, min(127, int(yoff))) & 0xFF
-        name = self.animations[anim_id].name if anim_id < len(self.animations) else ""
+        if name is None:
+            name = self.animations[anim_id].name if anim_id < len(self.animations) else ""
+        name = str(name)[:LONGNAME - 1]
         frame_ids = [f for f, _x, _y in frames]
         frame_x = [x for _f, x, _y in frames]
         frame_y = [y for _f, _x, y in frames]
+        if anim_id < len(self.animation_names):
+            self.animation_names[anim_id] = name
         self.animations[anim_id] = AnimationDefinition(anim_id, name, bytes(old), len(frames), frame_ids, frame_x, frame_y)
 
     def objects(self) -> List[ObjectPlacement]:
@@ -386,6 +399,8 @@ class LevelData:
             replacements.append(("events", encode_rle_block(self.event_types_to_bytes())))
         if save_animations:
             replacements.append(("animations", encode_rle_block(self.animations_to_bytes())))
+        if save_animations and "animation_names" in self.spans:
+            replacements.append(("animation_names", encode_rle_block(self.animation_names_to_bytes())))
         if save_bullets and "bullets" in self.spans:
             replacements.append(("bullets", encode_rle_block(self.bullets_to_bytes())))
         if save_bullets and "attack_names" in self.spans:

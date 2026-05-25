@@ -190,7 +190,6 @@ class BuildTabsMixin:
         ttk.Checkbutton(save_box, text="Save level-local event definitions", variable=self.save_event_defs_var).pack(anchor="w")
         ttk.Checkbutton(save_box, text="Save level-local paths", variable=self.save_paths_var).pack(anchor="w")
         ttk.Checkbutton(save_box, text="Save level-local collision masks", variable=self.save_masks_var).pack(anchor="w")
-        ttk.Checkbutton(save_box, text="Save level-local animations", variable=self.save_animations_var).pack(anchor="w")
         nav = ttk.LabelFrame(tab, text="Jump to level-local editor", padding=6)
         nav.pack(fill=tk.X)
         ttk.Button(nav, text="Event definitions", command=lambda: self.define_tabs.select(self.global_event_defs_tab)).pack(fill=tk.X, pady=2)
