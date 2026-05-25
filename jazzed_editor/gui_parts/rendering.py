@@ -14,7 +14,7 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
 
 from ..raw_data import *
-from ..raw.event_semantics import _first_modifier_for_pickup
+from ..raw.event_semantics import _first_modifier_for_pickup, difficulty_badge, event_force_overlay
 from ..raw.sprites import _signed_byte
 
 class RenderingMixin:
@@ -238,9 +238,36 @@ class RenderingMixin:
                     category = self.level.event_def(event).category
                     outline = "#ffff00" if selected else ("#ff00ff" if highlighted else color_by_cat.get(category, "#ff5050"))
                     self.canvas.create_rectangle(px + 1, py + 1, px + tile_px - 2, py + tile_px - 2, outline=outline, width=3 if selected else 2, tags=("overlay", "event_overlay"))
+                    if event == 122:
+                        y_line = py + max(4, tile_px * 0.28)
+                        self.canvas.create_line(px + 4, y_line, px + tile_px - 4, y_line, fill="#66ffcc", width=max(2, z), tags=("overlay", "event_overlay", "one_way_overlay"))
+                        self.canvas.create_line(px + tile_px * 0.35, py + tile_px * 0.74, px + tile_px * 0.35, y_line + 3, fill="#66ffcc", width=max(1, z), arrow=tk.LAST, tags=("overlay", "event_overlay", "one_way_overlay"))
+                        self.canvas.create_line(px + tile_px * 0.65, py + tile_px * 0.74, px + tile_px * 0.65, y_line + 3, fill="#66ffcc", width=max(1, z), arrow=tk.LAST, tags=("overlay", "event_overlay", "one_way_overlay"))
+                    elif event == 124:
+                        self.canvas.create_rectangle(px + 2, py + 2, px + tile_px - 3, py + tile_px - 3, fill="#000000", stipple="gray50", outline="#80ffff", width=2, tags=("overlay", "event_overlay", "pass_through_overlay"))
+                    force = event_force_overlay(self.level.event_types[event])
+                    if force:
+                        cx = px + tile_px / 2
+                        cy = py + tile_px / 2
+                        dx = int(force["dx"])
+                        dy = int(force["dy"])
+                        length = max(8, tile_px * 0.34)
+                        sx = cx - dx * length * 0.45
+                        sy = cy - dy * length * 0.45
+                        ex = cx + dx * length
+                        ey = cy + dy * length
+                        color = str(force.get("color", "#50e6ff"))
+                        self.canvas.create_line(sx, sy, ex, ey, fill=color, width=max(2, z), arrow=tk.LAST, tags=("overlay", "event_overlay", "event_force_overlay"))
+                        if self.show_event_labels.get():
+                            self.canvas.create_text(cx, cy + min(11, tile_px * 0.22), text=str(force.get("label", "")), fill=color, anchor="n", tags=("overlay", "event_overlay", "event_force_overlay"))
                     if self.show_event_labels.get():
                         self.canvas.create_rectangle(px + 2, py + 2, px + 23, py + 16, fill="#000000", outline="", stipple="gray50", tags=("overlay", "event_overlay"))
                         self.canvas.create_text(px + 4, py + 3, text=str(event), fill="#ffff00", anchor="nw", tags=("overlay", "event_overlay"))
+                    difficulty = self.level.event_types[event][0] if event < len(self.level.event_types) else 0
+                    if difficulty > 0:
+                        badge = difficulty_badge(difficulty)
+                        self.canvas.create_rectangle(px + tile_px - 16, py + 2, px + tile_px - 2, py + 16, fill="#000000", outline="#ffff80", tags=("overlay", "event_overlay", "difficulty_overlay"))
+                        self.canvas.create_text(px + tile_px - 9, py + 9, text=badge, fill="#ffff80", anchor="center", tags=("overlay", "event_overlay", "difficulty_overlay"))
                     if self.show_object_names.get():
                         label = friendly_event_name(self.level.event_def(event))[:26]
                         self.canvas.create_text(px + 3, py + tile_px - 13, text=label, fill="#ffffff", anchor="nw", tags=("overlay", "event_overlay"))

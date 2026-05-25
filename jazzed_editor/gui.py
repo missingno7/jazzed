@@ -80,6 +80,7 @@ class LevelEditorApp(
         self.save_masks_var = tk.BooleanVar(value=False)
         self.save_animations_var = tk.BooleanVar(value=False)
         self.object_category_filter = tk.StringVar(value="all")
+        self.object_palette_view = tk.StringVar(value="atlas")
         self.selected_path = tk.IntVar(value=0)
         self._editing_event_id = 0
         self.status = tk.StringVar(value="Open a Jazz Jackrabbit DOS directory or choose a level.")
@@ -203,17 +204,14 @@ class LevelEditorApp(
 
         self.build_workspace = ttk.Frame(self.workspace_tabs)
         self.define_workspace = ttk.Frame(self.workspace_tabs)
-        self.event_defs_workspace = ttk.Frame(self.workspace_tabs)
         self.workspace_tabs.add(self.build_workspace, text="BUILD")
-        self.workspace_tabs.add(self.event_defs_workspace, text="EVENT DEFS")
         self.workspace_tabs.add(self.define_workspace, text="LEVEL LOCAL")
 
         self.build_tabs = ttk.Notebook(self.build_workspace)
         self.build_tabs.pack(fill=tk.BOTH, expand=True)
         self.define_tabs = ttk.Notebook(self.define_workspace)
         self.define_tabs.pack(fill=tk.BOTH, expand=True)
-        self.event_defs_tabs = ttk.Notebook(self.event_defs_workspace)
-        self.event_defs_tabs.pack(fill=tk.BOTH, expand=True)
+        self.event_defs_tabs = self.define_tabs
 
         self.tabs = self.build_tabs
         self._build_objects_tab()
@@ -221,15 +219,12 @@ class LevelEditorApp(
         self._build_metadata_tab()
         self._build_layers_tab()
 
-        self.tabs = self.event_defs_tabs
-        self._build_event_defs_tab()
-
         self.tabs = self.define_tabs
+        self._build_event_defs_tab()
         self._build_animations_tab()
         self._build_bullets_tab()
         self._build_paths_tab()
         self._build_masks_tab()
-        self._build_events_tab()
         self._build_validation_tab()
 
         self.game_tabs = ttk.Notebook(self.assets_browser_page)
@@ -297,8 +292,6 @@ class LevelEditorApp(
 
 
         # Reserved markers are numeric IDs, not a cloneable raw template.
-
-
 
 
 

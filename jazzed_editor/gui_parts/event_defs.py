@@ -14,7 +14,7 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
 
 from ..raw_data import *
-from ..raw.event_semantics import _first_modifier_for_pickup
+from ..raw.event_semantics import _first_modifier_for_pickup, touch_mechanism_summary
 from ..raw.sprites import _signed_byte
 
 class EventDefsMixin:
@@ -128,6 +128,14 @@ class EventDefsMixin:
             raw[10] = 28
             raw[9] = 0
             raw[8] = raw[8] or 2
+        elif concept == "Float / blower":
+            raw[10] = 32
+            raw[9] = 0
+            raw[22] = raw[22] or 4
+        elif concept == "Repel / sucker tube":
+            raw[4] = raw[4] if raw[4] in {37, 38} else 37
+            raw[9] = 0
+            raw[22] = raw[22] or 8
         elif concept == "Path-moving object":
             raw[4] = 6
             raw[22] = min(15, raw[22])
@@ -203,6 +211,8 @@ class EventDefsMixin:
         if concept == "Unused / empty":
             raw[:] = bytes(ELENGTH)
             return
+        current_difficulty = f"{raw[0]}: {difficulty_label(raw[0])}" if raw[0] in DIFFICULTY_LEVELS else "0: Easy+"
+        row = add_combo(row, "difficulty", "Difficulty gate", DIFFICULTY_COMBO_LABELS, current_difficulty)
         if concept in {"Touch pickup / item", "Shootable pickup / container"}:
             cur = f"{raw[10]}: {PICKUP_MODIFIER_MEANINGS.get(raw[10], (f'modifier_{raw[10]}', ''))[0]}"
             if raw[10] not in PICKUP_MODIFIER_MEANINGS:
@@ -235,6 +245,26 @@ class EventDefsMixin:
         elif concept == "Conveyor belt":
             row = add_spin(row, "magnitude_signed", "Push magnitude (signed)", _signed_byte(raw[8]), -128, 127)
             row = add_spin(row, "sound", "Sound", raw[21], 0, 255)
+        elif concept == "Float / blower":
+            mode = "vertical lift (multiB set)" if raw[23] else "horizontal float (multiB clear)"
+            row = add_combo(row, "float_mode", "Float mode", ["vertical lift (multiB set)", "horizontal float (multiB clear)"], mode)
+            row = add_spin(row, "multi_a_signed", "Lift height / strength (multiA)", _signed_byte(raw[22]), -128, 127)
+            row = add_spin(row, "magnitude_signed", "Horizontal direction sign (magnitude)", _signed_byte(raw[8]), -128, 127)
+            row = add_spin(row, "sound", "Sound", raw[21], 0, 255)
+            for line in touch_mechanism_summary(raw):
+                ttk.Label(self.event_concept_frame, text=line, wraplength=520).grid(row=row, column=0, columnspan=3, sticky="w", pady=1)
+                row += 1
+        elif concept == "Repel / sucker tube":
+            movement_current = f"{raw[4]}: {movement_meaning_detail(raw[4])[0]}" if raw[4] in {37, 38} else "37: Repel / sucker tube"
+            mode = "vertical/up mode (multiB set)" if raw[23] else "horizontal mode (multiB clear)"
+            row = add_combo(row, "movement", "Repel movement", ["37: Repel / sucker tube", "38: Repel / sucker tube variant"], movement_current)
+            row = add_combo(row, "repel_mode", "Repel mode", ["vertical/up mode (multiB set)", "horizontal mode (multiB clear)"], mode)
+            row = add_spin(row, "multi_a_signed", "Height / strength (multiA)", _signed_byte(raw[22]), -128, 127)
+            row = add_spin(row, "magnitude_signed", "Horizontal direction sign (magnitude)", _signed_byte(raw[8]), -128, 127)
+            row = add_spin(row, "sound", "Sound", raw[21], 0, 255)
+            for line in touch_mechanism_summary(raw):
+                ttk.Label(self.event_concept_frame, text=line, wraplength=520).grid(row=row, column=0, columnspan=3, sticky="w", pady=1)
+                row += 1
         elif concept == "Path-moving object":
             row = add_spin(row, "path_index", "Path index (multiA)", raw[22], 0, 15)
             row = add_combo(row, "movement", "Path movement mode", ["6: Use level path", "7: Flying snake / path"], f"{raw[4]}: {movement_meaning_detail(raw[4])[0]}")
@@ -255,36 +285,124 @@ class EventDefsMixin:
         for idx, key in common_anims:
             row = add_spin(row, key, event_field_label_for(raw, idx), raw[idx], 0, 127)
         row = add_spin(row, "anim_speed", "Animation speed", raw[17] + 1, 1, 256)
+        self._build_event_concept_preview(row, event_id, raw)
+
+    def _build_event_concept_preview(self, row: int, event_id: int, raw: bytes) -> None:
+        frame = ttk.LabelFrame(self.event_concept_frame, text="Visual preview", padding=6)
+        frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        canvas = tk.Canvas(frame, width=280, height=86, background="#181818", highlightthickness=0)
+        canvas.pack(fill=tk.X)
+        self.event_concept_preview_canvas = canvas
+        self.event_concept_preview_photo = None
+        self.render_event_concept_preview(event_id, raw)
+
+    def render_event_concept_preview(self, event_id: int, raw: bytes) -> None:
+        canvas = getattr(self, "event_concept_preview_canvas", None)
+        if canvas is None:
+            return
+        canvas.delete("all")
+        canvas.create_rectangle(8, 8, 72, 72, fill="#242424", outline="#666666")
+        canvas.create_line(8, 40, 72, 40, fill="#333333")
+        canvas.create_line(40, 8, 40, 72, fill="#333333")
+
+        sprite = self.event_preview_image(event_id, 56) if event_id else None
+        if sprite is not None:
+            photo = ImageTk.PhotoImage(sprite)
+            self.event_concept_preview_photo = photo
+            canvas.create_image(40, 40, image=photo, anchor="center")
+        else:
+            canvas.create_text(40, 40, text=f"{event_id}", fill="#ffff80", anchor="center")
+
+        if event_id == 122:
+            canvas.create_line(14, 28, 66, 28, fill="#66ffcc", width=4)
+            canvas.create_line(26, 56, 26, 35, fill="#66ffcc", width=2, arrow=tk.LAST)
+            canvas.create_line(54, 56, 54, 35, fill="#66ffcc", width=2, arrow=tk.LAST)
+            canvas.create_text(88, 18, text="One-way platform marker", fill="#66ffcc", anchor="w")
+            canvas.create_text(88, 38, text="Jump through from below; stand from above.", fill="#d8fff4", anchor="w")
+        elif event_id == 124:
+            canvas.create_rectangle(8, 8, 72, 72, fill="#000000", stipple="gray50", outline="#80ffff", width=2)
+            canvas.create_text(40, 40, text="124", fill="#80ffff", anchor="center")
+            canvas.create_text(88, 18, text="Pass-through foreground marker", fill="#80ffff", anchor="w")
+            canvas.create_text(88, 38, text="Shown as translucent tile overlay in the map.", fill="#d8ffff", anchor="w")
+
+        force = event_force_overlay(raw)
+        if force:
+            dx = int(force["dx"])
+            dy = int(force["dy"])
+            color = str(force.get("color", "#50e6ff"))
+            canvas.create_line(110, 60, 110 + dx * 44, 60 + dy * 34, fill=color, width=3, arrow=tk.LAST)
+            canvas.create_text(166, 56, text=str(force.get("label", "")), fill=color, anchor="w")
+
+        badge = difficulty_badge(raw[0])
+        if raw[0] > 0:
+            canvas.create_rectangle(58, 10, 72, 24, fill="#000000", outline="#ffff80")
+            canvas.create_text(65, 17, text=badge, fill="#ffff80", anchor="center")
+        canvas.create_text(88, 72, text=f"Difficulty: {difficulty_label(raw[0])}", fill="#dddddd", anchor="w")
 
     def open_bullet_picker_for(self, key: str) -> None:
         win = tk.Toplevel(self)
         win.title("Choose bullet type")
-        win.geometry("620x420")
-        columns = ("id", "name", "sprites", "finish", "behaviour")
-        tree = ttk.Treeview(win, columns=columns, show="headings", selectmode="browse")
-        for col, width, title in [
-            ("id", 45, "ID"), ("name", 190, "Name"), ("sprites", 120, "Sprites"),
-            ("finish", 70, "Finish"), ("behaviour", 80, "Behaviour"),
-        ]:
-            tree.heading(col, text=title)
-            tree.column(col, width=width, stretch=(col == "name"))
-        tree.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-        if self.level and getattr(self.level, "bullet_defs", None):
-            for b in self.level.bullet_defs:
-                tree.insert("", "end", iid=str(b.bullet_id), values=(b.bullet_id, bullet_display_name(b), "/".join(map(str, b.sprites)), b.finish_anim, b.behaviour))
-        else:
-            for i in range(BULLETS):
-                tree.insert("", "end", iid=str(i), values=(i, bullet_type_label(i), "", "", ""))
-        def choose(_event=None):
-            sel = tree.selection()
-            if not sel:
-                return
+        win.geometry("760x520")
+        frame = ttk.Frame(win, padding=8)
+        frame.pack(fill=tk.BOTH, expand=True)
+        canvas = tk.Canvas(frame, background="#181818", highlightthickness=0)
+        yscroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=yscroll.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        yscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        refs: List[ImageTk.PhotoImage] = []
+
+        bullets = list(self.level.bullet_defs) if self.level and getattr(self.level, "bullet_defs", None) else [
+            BulletDefinition(i, "", bytes(BLENGTH)) for i in range(BULLETS)
+        ]
+        cell_w = 118
+        cell_h = 104
+        cols = 6
+        selected = self.event_concept_vars.get(key).get() if key in getattr(self, "event_concept_vars", {}) else 0
+
+        def choose(bullet_id: int):
             var = self.event_concept_vars.get(key)
             if var is not None:
-                var.set(int(sel[0]))
+                var.set(int(bullet_id))
             win.destroy()
-        ttk.Button(win, text="Use selected", command=choose).pack(pady=(0, 8))
-        tree.bind("<Double-1>", choose)
+
+        def set_hover(tag: str, on: bool) -> None:
+            canvas.itemconfigure(f"{tag}_bg", fill="#303030" if on else "#202020", outline="#ffff00" if on else "#555555", width=3 if on else 1)
+            canvas.config(cursor="hand2" if on else "")
+
+        for pos, bullet in enumerate(bullets):
+            col = pos % cols
+            row = pos // cols
+            x = col * cell_w
+            y = row * cell_h
+            tag = f"bullet_pick_{bullet.bullet_id}"
+            outline = "#ffff00" if str(selected) == str(bullet.bullet_id) else "#555555"
+            canvas.create_rectangle(x + 3, y + 3, x + cell_w - 3, y + cell_h - 3, fill="#202020", outline=outline, width=2 if str(selected) == str(bullet.bullet_id) else 1, tags=(tag, f"{tag}_bg"))
+            canvas.create_text(x + 8, y + 7, text=f"B{bullet.bullet_id:02d}", fill="#ffff80", anchor="nw", tags=(tag,))
+            canvas.create_text(x + cell_w - 8, y + 7, text=f"beh {bullet.behaviour}", fill="#b8b8b8", anchor="ne", tags=(tag,))
+            shown = 0
+            for i, sprite_id in enumerate(bullet.sprites[:4]):
+                frame_img = self.spriteset.get(sprite_id) if self.spriteset and sprite_id else None
+                if frame_img:
+                    img = frame_img.image.copy()
+                    img.thumbnail((26, 26), Image.Resampling.NEAREST)
+                    photo = ImageTk.PhotoImage(img)
+                    refs.append(photo)
+                    canvas.create_image(x + 22 + shown * 23, y + 45, image=photo, anchor="center", tags=(tag,))
+                    shown += 1
+            if not shown:
+                canvas.create_text(x + cell_w // 2, y + 45, text="no sprite", fill="#777777", anchor="center", tags=(tag,))
+            name = bullet_display_name(bullet)[:17]
+            canvas.create_text(x + 8, y + 72, text=name, fill="#dddddd", anchor="nw", tags=(tag,))
+            canvas.create_text(x + 8, y + 88, text="/".join(map(str, bullet.sprites)), fill="#8fb8ff", anchor="nw", tags=(tag,))
+            canvas.tag_bind(tag, "<Enter>", lambda _e, t=tag: set_hover(t, True))
+            canvas.tag_bind(tag, "<Leave>", lambda _e, t=tag: set_hover(t, False))
+            canvas.tag_bind(tag, "<Button-1>", lambda _e, bid=bullet.bullet_id: choose(bid))
+            canvas.tag_bind(tag, "<Double-1>", lambda _e, bid=bullet.bullet_id: choose(bid))
+
+        rows = max(1, (len(bullets) + cols - 1) // cols)
+        canvas.configure(scrollregion=(0, 0, cols * cell_w, rows * cell_h))
+        win._photo_refs = refs
 
     def open_animation_picker_for(self, key: str) -> None:
         if not self.level:
@@ -452,6 +570,7 @@ class EventDefsMixin:
         if concept == "Unused / empty":
             raw[:] = bytes(ELENGTH)
             return
+        raw[0] = combo_num("difficulty", raw[0])
         if concept in {"Touch pickup / item", "Shootable pickup / container"}:
             raw[10] = combo_num("pickup_modifier", raw[10])
             shootable = get_bool("shootable", concept == "Shootable pickup / container")
@@ -490,6 +609,22 @@ class EventDefsMixin:
             raw[9] = 0
             raw[8] = get_int("magnitude_signed", _signed_byte(raw[8])) & 0xFF
             raw[21] = get_int("sound", raw[21])
+        elif concept == "Float / blower":
+            raw[10] = 32
+            raw[9] = 0
+            raw[8] = get_int("magnitude_signed", _signed_byte(raw[8])) & 0xFF
+            raw[22] = get_int("multi_a_signed", _signed_byte(raw[22])) & 0xFF
+            mode_var = vars.get("float_mode")
+            raw[23] = 1 if (mode_var is None and raw[23]) or (mode_var is not None and str(mode_var.get()).startswith("vertical")) else 0
+            raw[21] = get_int("sound", raw[21])
+        elif concept == "Repel / sucker tube":
+            raw[4] = combo_num("movement", raw[4] if raw[4] in {37, 38} else 37)
+            raw[9] = 0
+            raw[8] = get_int("magnitude_signed", _signed_byte(raw[8])) & 0xFF
+            raw[22] = get_int("multi_a_signed", _signed_byte(raw[22])) & 0xFF
+            mode_var = vars.get("repel_mode")
+            raw[23] = 1 if (mode_var is None and raw[23]) or (mode_var is not None and str(mode_var.get()).startswith("vertical")) else 0
+            raw[21] = get_int("sound", raw[21])
         elif concept == "Path-moving object":
             raw[4] = combo_num("movement", raw[4])
             raw[22] = max(0, min(15, get_int("path_index", raw[22])))
@@ -511,17 +646,12 @@ class EventDefsMixin:
             raw[17] = max(0, min(255, get_int("anim_speed", raw[17] + 1) - 1))
 
     def _build_event_defs_tab(self) -> None:
-        # This method builds the EVENT DEFS workspace. It has two internal tabs:
-        # a concept editor for normal work and a raw/interpretation view for diagnostics.
-        concept_tab = ttk.Frame(self.tabs, padding=8)
-        raw_tab = ttk.Frame(self.tabs, padding=8)
-        self.event_concept_tab = concept_tab
-        self.event_raw_tab = raw_tab
-        self.global_event_defs_tab = concept_tab
-        self.tabs.add(concept_tab, text="Concept editor")
-        self.tabs.add(raw_tab, text="Raw / interpretation")
+        event_defs_tab = ttk.Frame(self.tabs, padding=8)
+        self.event_defs_tab = event_defs_tab
+        self.global_event_defs_tab = event_defs_tab
+        self.tabs.add(event_defs_tab, text="Events")
 
-        selector = ttk.Frame(concept_tab)
+        selector = ttk.Frame(event_defs_tab)
         selector.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(selector, text="Event").pack(side=tk.LEFT)
         self.event_def_combo = ttk.Combobox(selector, state="readonly", width=46)
@@ -529,6 +659,18 @@ class EventDefsMixin:
         self.event_def_combo.bind("<<ComboboxSelected>>", self.on_event_def_combo_select)
         ttk.Button(selector, text="New type", command=self.create_new_object_type).pack(side=tk.LEFT)
         ttk.Button(selector, text="Duplicate as new", command=self.duplicate_event_definition_as_new).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(selector, text="Refresh", command=lambda: self.render_event_definition(self._editing_event_id)).pack(side=tk.LEFT, padx=(6, 0))
+
+        body_tabs = ttk.Notebook(event_defs_tab)
+        body_tabs.pack(fill=tk.BOTH, expand=True)
+        self.event_defs_inner_tabs = body_tabs
+
+        concept_tab = ttk.Frame(body_tabs, padding=8)
+        raw_tab = ttk.Frame(body_tabs, padding=8)
+        self.event_concept_tab = concept_tab
+        self.event_raw_tab = raw_tab
+        body_tabs.add(concept_tab, text="Concept editor")
+        body_tabs.add(raw_tab, text="Raw / interpretation")
 
         concept_row = ttk.Frame(concept_tab)
         concept_row.pack(fill=tk.X, pady=(0, 6))
@@ -543,11 +685,6 @@ class EventDefsMixin:
         self.event_concept_frame = ttk.LabelFrame(concept_tab, text="Object concept", padding=6)
         self.event_concept_frame.pack(fill=tk.BOTH, expand=True)
         self.event_concept_vars: Dict[str, Any] = {}
-
-        raw_selector = ttk.Frame(raw_tab)
-        raw_selector.pack(fill=tk.X, pady=(0, 6))
-        ttk.Label(raw_selector, text="Same selected event as Concept editor").pack(side=tk.LEFT)
-        ttk.Button(raw_selector, text="Refresh", command=lambda: self.render_event_definition(self._editing_event_id)).pack(side=tk.LEFT, padx=(8, 0))
 
         body = ttk.PanedWindow(raw_tab, orient=tk.VERTICAL)
         body.pack(fill=tk.BOTH, expand=True)

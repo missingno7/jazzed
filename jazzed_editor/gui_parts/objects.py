@@ -19,6 +19,8 @@ from ..raw.sprites import _signed_byte
 
 class ObjectsMixin:
     def populate_events(self) -> None:
+        if not hasattr(self, "event_list"):
+            return
         self.event_list.delete(0, tk.END)
         if not self.level:
             return
@@ -97,6 +99,21 @@ class ObjectsMixin:
         lines.append("Events 122..126 are reserved engine/render/collision markers and should be edited as marker placements, not duplicated as normal object types.")
         messagebox.showinfo("Reserved engine marker events", "\n".join(lines))
 
+    def _visible_palette_event_defs(self) -> List[EventDefinition]:
+        if not self.level:
+            return []
+        counts = self.event_usage_counts()
+        category_filter = self.object_category_filter.get()
+        visible = []
+        for evdef in self.level.event_catalog()[1:]:
+            # Show used events plus named/meaningful definitions. This keeps placeholder empty definitions out of the way.
+            if not evdef.name and counts.get(evdef.event_id, 0) == 0 and evdef.raw[5] == 0 and evdef.raw[6] == 0 and evdef.raw[9] == 0 and evdef.raw[10] == 0 and evdef.raw[11] == 0:
+                continue
+            if category_filter != "all" and evdef.category != category_filter:
+                continue
+            visible.append(evdef)
+        return visible
+
     def refresh_object_palette(self) -> None:
         if not hasattr(self, "palette_tree"):
             return
@@ -104,33 +121,105 @@ class ObjectsMixin:
         if not self.level:
             return
         counts = self.event_usage_counts()
-        category_filter = self.object_category_filter.get()
-        for evdef in self.level.event_catalog()[1:]:
-            # Show used events plus named/meaningful definitions. This keeps placeholder empty definitions out of the way.
-            if not evdef.name and counts.get(evdef.event_id, 0) == 0 and evdef.raw[5] == 0 and evdef.raw[6] == 0 and evdef.raw[9] == 0 and evdef.raw[10] == 0 and evdef.raw[11] == 0:
-                continue
-            if category_filter != "all" and evdef.category != category_filter:
-                continue
+        for evdef in self._visible_palette_event_defs():
             label = f"{evdef.event_id:03d}: {friendly_event_name(evdef)}"
             self.palette_tree.insert("", tk.END, iid=str(evdef.event_id), values=(evdef.category, counts.get(evdef.event_id, 0), label))
+        view = self.object_palette_view.get() if hasattr(self, "object_palette_view") else "list"
+        if hasattr(self, "palette_tree_frame") and hasattr(self, "palette_atlas_frame"):
+            if view == "atlas":
+                self.palette_tree_frame.pack_forget()
+                self.palette_atlas_frame.pack(fill=tk.BOTH, expand=True)
+                self.render_object_palette_atlas()
+            else:
+                self.palette_atlas_frame.pack_forget()
+                self.palette_tree_frame.pack(fill=tk.BOTH, expand=True)
+
+    def render_object_palette_atlas(self) -> None:
+        if not hasattr(self, "palette_atlas_canvas"):
+            return
+        canvas = self.palette_atlas_canvas
+        canvas.delete("all")
+        self._object_atlas_photo_refs = []
+        if not self.level:
+            canvas.configure(scrollregion=(0, 0, 1, 1))
+            return
+        counts = self.event_usage_counts()
+        visible = self._visible_palette_event_defs()
+        width = max(260, canvas.winfo_width() or 520)
+        cell_w = 96
+        cell_h = 88
+        cols = max(1, width // cell_w)
+        selected = int(self.current_event.get()) if hasattr(self, "current_event") else 0
+
+        def set_hover(tag: str, on: bool) -> None:
+            fill = "#303030" if on else "#202020"
+            outline = "#ffff00" if on else "#555555"
+            canvas.itemconfigure(f"{tag}_bg", fill=fill, outline=outline, width=3 if on else 1)
+            canvas.config(cursor="hand2" if on else "")
+
+        for pos, evdef in enumerate(visible):
+            event_id = evdef.event_id
+            col = pos % cols
+            row = pos // cols
+            x = col * cell_w
+            y = row * cell_h
+            tag = f"event_atlas_{event_id}"
+            outline = "#ffff00" if event_id == selected else "#555555"
+            width_line = 3 if event_id == selected else 1
+            canvas.create_rectangle(x + 3, y + 3, x + cell_w - 3, y + cell_h - 3, fill="#202020", outline=outline, width=width_line, tags=(tag, f"{tag}_bg"))
+            canvas.create_text(x + 8, y + 7, text=f"E{event_id:03d}", fill="#ffff80", anchor="nw", tags=(tag,))
+            use_text = str(counts.get(event_id, 0))
+            canvas.create_text(x + cell_w - 10, y + 7, text=use_text, fill="#b8b8b8", anchor="ne", tags=(tag,))
+            img = self.event_preview_image(event_id, 44)
+            if img is not None:
+                tile = Image.new("RGBA", (50, 44), (0, 0, 0, 0))
+                tile.alpha_composite(img, ((50 - img.width) // 2, (44 - img.height) // 2))
+                photo = ImageTk.PhotoImage(tile)
+                self._object_atlas_photo_refs.append(photo)
+                canvas.create_image(x + cell_w // 2, y + 39, image=photo, anchor="center", tags=(tag,))
+            else:
+                canvas.create_text(x + cell_w // 2, y + 39, text="no sprite", fill="#777777", anchor="center", tags=(tag,))
+            name = friendly_event_name(evdef)[:13]
+            canvas.create_text(x + 8, y + 66, text=name, fill="#dddddd", anchor="nw", tags=(tag,))
+            canvas.tag_bind(tag, "<Enter>", lambda _e, t=tag: set_hover(t, True))
+            canvas.tag_bind(tag, "<Leave>", lambda _e, t=tag: set_hover(t, False))
+            canvas.tag_bind(tag, "<Button-1>", lambda _e, eid=event_id: self.select_palette_event(eid))
+            canvas.tag_bind(tag, "<Double-1>", lambda _e, eid=event_id: self.select_palette_event(eid, use_as_brush=True))
+
+        rows = max(1, (len(visible) + cols - 1) // cols)
+        canvas.configure(scrollregion=(0, 0, cols * cell_w, rows * cell_h))
+
+    def select_palette_event(self, event_id: int, use_as_brush: bool = False) -> None:
+        if not self.level:
+            return
+        self.current_event.set(event_id)
+        self.tool_mode.set("events")
+        if hasattr(self, "palette_tree") and str(event_id) in self.palette_tree.get_children():
+            self.palette_tree.selection_set(str(event_id))
+            self.palette_tree.see(str(event_id))
+        self.render_event_definition(event_id)
+        self.highlight_event_id.set(event_id)
+        photo = self.render_event_icon(event_id, 32)
+        if hasattr(self, "object_preview_label"):
+            self.object_preview_label.configure(text=f"preview: event {event_id}", image=photo or "", compound=tk.LEFT)
+        if hasattr(self, "object_help_text"):
+            self.object_help_text.configure(state="normal")
+            self.object_help_text.delete("1.0", tk.END)
+            self.object_help_text.insert("1.0", object_tooltip(self.level.event_def(event_id)))
+            self.object_help_text.configure(state="disabled")
+        if hasattr(self, "palette_atlas_canvas"):
+            self.render_object_palette_atlas()
+        if use_as_brush:
+            self.status.set(f"Using object palette event {event_id}: {self.event_display_name(event_id)}. Click the map in Events mode to place it.")
+        else:
+            self.status.set(f"Selected object palette event {event_id}: {self.event_display_name(event_id)}. Click the map in Events mode to place it.")
 
     def on_palette_tree_select(self, _event: tk.Event) -> None:
         selection = self.palette_tree.selection()
         if not selection:
             return
         event_id = int(selection[0])
-        self.current_event.set(event_id)
-        self.tool_mode.set("events")
-        self.render_event_definition(event_id)
-        photo = self.render_event_icon(event_id, 32)
-        if hasattr(self, "object_preview_label"):
-            self.object_preview_label.configure(text=f"preview: event {event_id}", image=photo or "", compound=tk.LEFT)
-        if hasattr(self, "object_help_text") and self.level:
-            self.object_help_text.configure(state="normal")
-            self.object_help_text.delete("1.0", tk.END)
-            self.object_help_text.insert("1.0", object_tooltip(self.level.event_def(event_id)))
-            self.object_help_text.configure(state="disabled")
-        self.status.set(f"Selected object palette event {event_id}: {self.event_display_name(event_id)}. Click the map in Events mode to place it.")
+        self.select_palette_event(event_id)
 
     def use_palette_event(self) -> None:
         selection = self.palette_tree.selection()
@@ -309,6 +398,8 @@ class ObjectsMixin:
         self.status.set(f"Replaced {changed} placement(s): event {old_id} -> {new_id}. Definitions were not changed.")
 
     def on_event_select(self, _event: tk.Event) -> None:
+        if not hasattr(self, "event_list"):
+            return
         selection = self.event_list.curselection()
         if selection:
             event_id = int(selection[0])
@@ -320,9 +411,10 @@ class ObjectsMixin:
     def _sync_event_selection(self) -> None:
         event_id = max(0, min(126, int(self.current_event.get())))
         self.current_event.set(event_id)
-        self.event_list.selection_clear(0, tk.END)
-        self.event_list.selection_set(event_id)
-        self.event_list.see(event_id)
+        if hasattr(self, "event_list"):
+            self.event_list.selection_clear(0, tk.END)
+            self.event_list.selection_set(event_id)
+            self.event_list.see(event_id)
         self.render_event_definition(event_id)
 
     def on_object_tree_select(self, _event: tk.Event) -> None:
@@ -367,4 +459,3 @@ class ObjectsMixin:
         self.build_tabs.select(self.objects_tab)
         self._sync_event_selection()
         self.status.set(f"Copied object event={event_id} to event brush. Click map in Events mode to place another instance.")
-

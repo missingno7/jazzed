@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 from .constants import *
+from .codecs import signed_byte
 
 def is_reserved_engine_event(event_id: int) -> bool:
     return int(event_id) in RESERVED_ENGINE_EVENTS
@@ -57,6 +58,17 @@ MODIFIER_TOUCH_MEANINGS = {
     **PICKUP_MODIFIER_MEANINGS,
 }
 
+TOUCH_MECHANISM_MODIFIERS = {28, 29, 31, 32}
+REPEL_MOVEMENTS = {37, 38}
+
+DIFFICULTY_LEVELS = {
+    0: ("Easy+", "E", "visible on Easy, Medium, Hard, and Turbo"),
+    1: ("Medium+", "M", "visible on Medium, Hard, and Turbo"),
+    2: ("Hard+", "H", "visible on Hard and Turbo"),
+    3: ("Turbo only", "T", "visible only on Turbo"),
+}
+DIFFICULTY_COMBO_LABELS = [f"{k}: {v[0]}" for k, v in DIFFICULTY_LEVELS.items()]
+
 MOVEMENT_FIELD_MEANINGS = {
     0: ("Static", {}),
     1: ("Sink down", {}),
@@ -97,6 +109,18 @@ def movement_meaning_detail(movement: int) -> Tuple[str, Dict[str, str]]:
     return MOVEMENT_FIELD_MEANINGS.get(int(movement), (movement_name(int(movement)), {}))
 
 
+def difficulty_label(value: int) -> str:
+    return DIFFICULTY_LEVELS.get(int(value), (f"Unknown difficulty {value}", "?", "unknown difficulty gate"))[0]
+
+
+def difficulty_badge(value: int) -> str:
+    return DIFFICULTY_LEVELS.get(int(value), ("", "?", ""))[1]
+
+
+def difficulty_description(value: int) -> str:
+    return DIFFICULTY_LEVELS.get(int(value), ("", "?", "unknown difficulty gate"))[2]
+
+
 def semantic_event_category(event_id: int, raw: bytes, name: str = "") -> str:
     if event_id == 0:
         return "empty"
@@ -110,12 +134,12 @@ def semantic_event_category(event_id: int, raw: bytes, name: str = "") -> str:
         return "pickup/touch item"
     if modifier in PICKUP_MODIFIER_MEANINGS and strength > 0:
         return "shootable pickup/container"
-    if modifier == 0 and strength:
-        return "enemy/hazard"
     if movement == 21 or modifier == 7:
         return "destructible/level geometry"
-    if modifier in {28, 29, 31, 32, 38, 13}:
+    if modifier in {28, 29, 31, 32, 38, 13} or movement in REPEL_MOVEMENTS:
         return "touch trigger/mechanism"
+    if modifier == 0 and strength:
+        return "enemy/hazard"
     if points and not strength:
         return "pickup/touch item"
     return classify_event(event_id, raw, name)
@@ -144,6 +168,7 @@ def semantic_event_lines(event_id: int, raw: bytes, name: str = "") -> List[str]
     category = semantic_event_category(event_id, raw, name)
     lines = [
         f"Semantic category: {category}",
+        f"Difficulty gate: {difficulty_label(raw[0])} - {difficulty_description(raw[0])}",
         f"Modifier: {modifier} — {modifier_label}",
         f"  {modifier_detail}",
         f"Movement: {movement} — {movement_label}",
@@ -161,6 +186,10 @@ def semantic_event_lines(event_id: int, raw: bytes, name: str = "") -> List[str]
         lines.append("modifier 0 + strength > 0 is counted as enemy/hazard; touching hurts, hits can kill it.")
     elif category == "destructible/level geometry":
         lines.append("movement 21 / modifier 7 are commonly used for destructible blocks or geometry helpers.")
+
+    mechanism = touch_mechanism_summary(raw)
+    if mechanism:
+        lines.extend(mechanism)
 
     if modifier in {15, 16, 17, 18, 19, 20, 30, 39, 40}:
         lines.append("Weapon/ammo identity is encoded by modifier, not by the generic pickup category.")
@@ -201,7 +230,7 @@ def event_field_label_for(raw: bytes, idx: int) -> str:
     movement = raw[4] if len(raw) > 4 else 0
     modifier = raw[10] if len(raw) > 10 else 0
     mapping = {
-        0: "difficulty",
+        0: "difficulty gate",
         2: "reflection / draw flags",
         4: "movement behavior",
         5: "left/primary animation",
@@ -240,7 +269,104 @@ def event_field_label_for(raw: bytes, idx: int) -> str:
         label = "modifier / pickup identity"
     elif idx == 9 and modifier in PICKUP_MODIFIER_MEANINGS:
         label = "strength: 0 touch, >0 shootable"
+    elif idx == 8 and modifier == 28:
+        label = "belt push X signed (magnitude)"
+    elif idx == 8 and modifier == 29:
+        label = "spring target offset signed (magnitude)"
+    elif idx == 8 and movement in REPEL_MOVEMENTS:
+        label = "repel X direction sign (magnitude)"
+    elif idx == 22 and modifier == 32:
+        label = "float height/strength (multiA)"
+    elif idx == 23 and modifier == 32:
+        label = "float vertical mode flag (multiB)"
+    elif idx == 22 and movement in REPEL_MOVEMENTS:
+        label = "repel height/strength (multiA)"
+    elif idx == 23 and movement in REPEL_MOVEMENTS:
+        label = "repel vertical mode flag (multiB)"
     return label
+
+
+def _event_value(raw: bytes, idx: int, default: int = 0) -> int:
+    return raw[idx] if idx < len(raw) else default
+
+
+def touch_mechanism_summary(raw: bytes) -> List[str]:
+    movement = _event_value(raw, 4)
+    magnitude = signed_byte(_event_value(raw, 8))
+    modifier = _event_value(raw, 10)
+    multi_a = signed_byte(_event_value(raw, 22))
+    multi_b = signed_byte(_event_value(raw, 23))
+    lines: List[str] = []
+
+    if movement in REPEL_MOVEMENTS:
+        if multi_b:
+            if multi_a > 0:
+                direction = "left" if magnitude < 0 else "right"
+                lines.append(
+                    f"Repel/sucker movement: pushes horizontally {direction} and pulls up by multiA*3 pixels ({multi_a})."
+                )
+            else:
+                lines.append("Repel/sucker movement: vertical down mode because multiB is set and multiA <= 0.")
+            lines.append(f"Repel vertical velocity seed: multiA * -24 = {multi_a * -24}.")
+        else:
+            direction = "left" if magnitude < 0 else "right"
+            lines.append(f"Repel/sucker movement: horizontal repel mode, direction sign from magnitude ({direction}).")
+
+    if modifier == 28:
+        direction = "left" if magnitude < 0 else ("right" if magnitude > 0 else "none")
+        lines.append(f"Belt/conveyor touch effect: moves player {direction}; per-touch X push is magnitude*64 ({magnitude * 64}).")
+    elif modifier == 29:
+        lines.append(f"Upwards spring touch effect: target Y offset is magnitude*21 pixels ({magnitude * 21}); plays the sound field.")
+    elif modifier == 31:
+        lines.append("Water-level touch effect: sets water level to the tile just below this event.")
+    elif modifier == 32:
+        if multi_b:
+            lines.append(f"Float touch effect: vertical lift mode; target is multiA*17 pixels above the tile ({multi_a * 17}).")
+        else:
+            lines.append("Float touch effect: horizontal float mode; direction is controlled by the player's stored float state.")
+
+    return lines
+
+
+def event_force_overlay(raw: bytes) -> Optional[Dict[str, object]]:
+    movement = _event_value(raw, 4)
+    magnitude = signed_byte(_event_value(raw, 8))
+    modifier = _event_value(raw, 10)
+    multi_a = signed_byte(_event_value(raw, 22))
+    multi_b = signed_byte(_event_value(raw, 23))
+
+    if modifier == 28 and magnitude:
+        return {
+            "dx": 1 if magnitude > 0 else -1,
+            "dy": 0,
+            "label": f"belt {magnitude:+d}",
+            "color": "#ffdd40",
+        }
+    if modifier == 32:
+        if multi_b:
+            return {
+                "dx": 0,
+                "dy": -1 if multi_a >= 0 else 1,
+                "label": f"float {multi_a}",
+                "color": "#50e6ff",
+            }
+        return {
+            "dx": 1 if magnitude >= 0 else -1,
+            "dy": 0,
+            "label": "float H",
+            "color": "#50e6ff",
+        }
+    if movement in REPEL_MOVEMENTS:
+        if multi_b:
+            dx = 1 if magnitude >= 0 else -1
+            dy = -1 if multi_a > 0 else 1
+            label = f"repel {multi_a}"
+        else:
+            dx = 1 if magnitude >= 0 else -1
+            dy = 0
+            label = "repel H"
+        return {"dx": dx, "dy": dy, "label": label, "color": "#ff66d8"}
+    return None
 
 
 
@@ -269,6 +395,8 @@ EVENT_CONCEPTS = [
     "Spring / bounce",
     "Warp trigger",
     "Conveyor belt",
+    "Float / blower",
+    "Repel / sucker tube",
     "Path-moving object",
     "Foreground / engine marker",
     "Raw / advanced",
@@ -289,6 +417,12 @@ def infer_event_concept(event_id: int, raw: bytes, name: str = "") -> str:
     modifier = raw[10]
     movement = raw[4]
     strength = raw[9]
+    if modifier == 28:
+        return "Conveyor belt"
+    if modifier == 32:
+        return "Float / blower"
+    if movement in REPEL_MOVEMENTS:
+        return "Repel / sucker tube"
     if category == "shootable pickup/container":
         return "Shootable pickup / container"
     if category == "pickup/touch item":
@@ -301,8 +435,6 @@ def infer_event_concept(event_id: int, raw: bytes, name: str = "") -> str:
         return "Spring / bounce"
     if modifier == 13:
         return "Warp trigger"
-    if modifier == 28:
-        return "Conveyor belt"
     if movement in {6, 7}:
         return "Path-moving object"
     return "Raw / advanced"
@@ -501,4 +633,3 @@ def object_tooltip(ev: "EventDefinition") -> str:
         f"Animations: left/right={raw[5] & 0x7F}/{raw[6] & 0x7F}, "
         f"finish={raw[28] & 0x7F}/{raw[29] & 0x7F}, shoot={raw[30] & 0x7F}/{raw[31] & 0x7F}"
     )
-

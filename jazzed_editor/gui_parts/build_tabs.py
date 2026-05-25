@@ -42,21 +42,6 @@ class BuildTabsMixin:
         self.atlas_canvas.bind("<Button-1>", self.on_atlas_click)
         self.atlas_canvas.bind("<Configure>", lambda _e: self.render_atlas())
 
-    def _build_events_tab(self) -> None:
-        tab = ttk.Frame(self.tabs, padding=8)
-        self.raw_events_tab = tab
-        self.tabs.add(tab, text="Raw Events")
-        ttk.Label(tab, text="This edits the event ID stored in map cells. It does not edit the event definition table yet.").pack(anchor="w")
-        event_form = ttk.Frame(tab)
-        event_form.pack(fill=tk.X, pady=(6, 4))
-        ttk.Label(event_form, text="Selected event ID").grid(row=0, column=0, sticky="w")
-        ttk.Spinbox(event_form, from_=0, to=126, textvariable=self.current_event, width=7, command=self._sync_event_selection).grid(row=0, column=1, sticky="w")
-        ttk.Button(event_form, text="Clear event brush", command=lambda: self.current_event.set(0)).grid(row=0, column=2, sticky="w", padx=(6, 0))
-
-        self.event_list = tk.Listbox(tab, height=18, exportselection=False)
-        self.event_list.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
-        self.event_list.bind("<<ListboxSelect>>", self.on_event_select)
-
     def _build_objects_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=8)
         self.objects_tab = tab
@@ -80,12 +65,25 @@ class BuildTabsMixin:
         self.object_help_text.configure(state="disabled")
         palette_frame = ttk.LabelFrame(tab, text="Palette", padding=4)
         palette_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
-        self.palette_tree = ttk.Treeview(palette_frame, columns=("cat", "uses", "name"), show="headings", height=8, selectmode="browse")
+        palette_toolbar = ttk.Frame(palette_frame)
+        palette_toolbar.pack(fill=tk.X, pady=(0, 4))
+        ttk.Radiobutton(palette_toolbar, text="Atlas", value="atlas", variable=self.object_palette_view, command=self.refresh_object_palette).pack(side=tk.LEFT)
+        ttk.Radiobutton(palette_toolbar, text="List", value="list", variable=self.object_palette_view, command=self.refresh_object_palette).pack(side=tk.LEFT, padx=(8, 0))
+        self.palette_tree_frame = ttk.Frame(palette_frame)
+        self.palette_tree = ttk.Treeview(self.palette_tree_frame, columns=("cat", "uses", "name"), show="headings", height=8, selectmode="browse")
         for col, width, text in [("cat", 145, "Category"), ("uses", 45, "Uses"), ("name", 190, "Event / Name")]:
             self.palette_tree.heading(col, text=text)
             self.palette_tree.column(col, width=width, stretch=(col == "name"))
+        self.palette_tree_frame.pack(fill=tk.BOTH, expand=True)
         self.palette_tree.pack(fill=tk.BOTH, expand=True)
         self.palette_tree.bind("<<TreeviewSelect>>", self.on_palette_tree_select)
+        self.palette_atlas_frame = ttk.Frame(palette_frame)
+        self.palette_atlas_canvas = tk.Canvas(self.palette_atlas_frame, background="#181818", highlightthickness=0, height=220)
+        self.palette_atlas_scroll = ttk.Scrollbar(self.palette_atlas_frame, orient=tk.VERTICAL, command=self.palette_atlas_canvas.yview)
+        self.palette_atlas_canvas.configure(yscrollcommand=self.palette_atlas_scroll.set)
+        self.palette_atlas_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.palette_atlas_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.palette_atlas_canvas.bind("<Configure>", lambda _e: self.render_object_palette_atlas())
         buttons = ttk.Frame(tab)
         buttons.pack(fill=tk.X, pady=(0, 6))
         ttk.Button(buttons, text="Refresh list", command=self.refresh_objects).pack(side=tk.LEFT)
@@ -249,4 +247,3 @@ class BuildTabsMixin:
         ttk.Button(row, text="Apply 8x8 mask", command=self.apply_mask_from_ui).pack(side=tk.LEFT, padx=(6, 0))
         self.mask_text = tk.Text(tab, height=18, wrap="none")
         self.mask_text.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
-

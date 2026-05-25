@@ -75,9 +75,11 @@ class OverviewMixin:
         event_id = self.current_event.get()
         if self.selected_object is not None:
             event_id = self.selected_object[0] if isinstance(self.selected_object, int) else self.level.grid[self.selected_object[1]][self.selected_object[0]]["event"]
-        self.workspace_tabs.select(self.event_defs_workspace)
-        if hasattr(self, "event_defs_tabs") and hasattr(self, "event_concept_tab"):
-            self.event_defs_tabs.select(self.event_concept_tab)
+        self.workspace_tabs.select(self.define_workspace)
+        if hasattr(self, "define_tabs") and hasattr(self, "event_defs_tab"):
+            self.define_tabs.select(self.event_defs_tab)
+        if hasattr(self, "event_defs_inner_tabs") and hasattr(self, "event_concept_tab"):
+            self.event_defs_inner_tabs.select(self.event_concept_tab)
         self.highlight_event_id.set(event_id)
         self.current_event.set(event_id)
         self.refresh_event_def_selector()
@@ -121,4 +123,3 @@ class OverviewMixin:
             "• If it is hardcoded in Jazz 1 DOS engine behavior / OpenJazz reference behavior, it is ENGINE GLOBAL and should be documented/read-only unless the editor later supports code patches.",
         ]))
         note.configure(state="disabled")
-
