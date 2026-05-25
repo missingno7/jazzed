@@ -149,11 +149,10 @@ class RenderingMixin:
 
         img = Image.new("RGBA", (width, height), bg)
         draw = ImageDraw.Draw(img, "RGBA")
-        viewport_h = max(100, self.canvas.winfo_height() or 480) if hasattr(self, "canvas") else 480
-        bg_scale = max(1, (viewport_h - 1) // 100 + 1)
+        level_h = max(1, LH * TILE_SIZE)
         global_y0 = tile_y0 * TILE_SIZE
         for y in range(height):
-            palette_row = min(99, ((global_y0 + y) % viewport_h) // bg_scale)
+            palette_row = min(99, ((global_y0 + y) * 100) // level_h)
             r, g, b = palette[156 + palette_row]
             draw.line((0, y, width, y), fill=(r, g, b, 255))
 
@@ -205,12 +204,13 @@ class RenderingMixin:
             self._draw_collision_overlay_canvas(tile_px)
 
         if self.show_grid.get():
+            grid_dash = (1, max(3, tile_px // 5))
             for x in range(0, LW + 1):
                 px = x * tile_px
-                self.canvas.create_line(px, 0, px, map_h, fill="#ffffff", stipple="gray75", tags=("overlay", "grid_overlay"))
+                self.canvas.create_line(px, 0, px, map_h, fill="#e0e0ff", dash=grid_dash, tags=("overlay", "grid_overlay"))
             for y in range(0, LH + 1):
                 py = y * tile_px
-                self.canvas.create_line(0, py, map_w, py, fill="#ffffff", stipple="gray75", tags=("overlay", "grid_overlay"))
+                self.canvas.create_line(0, py, map_w, py, fill="#e0e0ff", dash=grid_dash, tags=("overlay", "grid_overlay"))
 
         if self.show_water_level.get() and self.level.metadata.water_level not in (0, 65535):
             wy = max(0, min(map_h - 1, int(self.level.metadata.water_level) * z))

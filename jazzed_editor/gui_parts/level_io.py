@@ -330,11 +330,19 @@ class LevelIoMixin:
         self.status.set("Applied level metadata fields. Use Save to write them.")
 
     def render_mask_info(self, tile: int) -> None:
-        if not self.level or not hasattr(self, "mask_text"):
+        if not self.level:
             return
         tile = max(0, min(255, int(tile)))
-        start = tile * 8
         self.mask_tile_var.set(tile) if hasattr(self, "mask_tile_var") else None
+        if hasattr(self, "_mask_rows_for_tile"):
+            self._editing_mask_rows = self._mask_rows_for_tile(tile)
+        if hasattr(self, "render_mask_editor"):
+            self.render_mask_editor(tile)
+        if hasattr(self, "render_mask_atlas"):
+            self.render_mask_atlas()
+        if not hasattr(self, "mask_text"):
+            return
+        start = tile * 8
         lines = [f"Tile {tile} collision mask:", "", "Edit only the 8 rows below (# solid, . empty), then click Apply 8x8 mask:", "Leftmost character is mask bit 0 / left side of tile.", ""]
         if start + 8 <= len(self.level.masks):
             for row in self.level.masks[start:start + 8]:

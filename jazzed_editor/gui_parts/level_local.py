@@ -689,7 +689,177 @@ class LevelLocalMixin:
         self.refresh_global_summary()
         self.status.set(f"Edited global path {path_id}. Enable/save global paths is on; Save as... writes it.")
 
+    def _mask_rows_for_tile(self, tile: int) -> List[int]:
+        if not self.level:
+            return [0] * 8
+        tile = max(0, min(255, int(tile)))
+        start = tile * 8
+        if start < 0 or start + 8 > len(self.level.masks):
+            return [0] * 8
+        return list(self.level.masks[start:start + 8])
+
+    def _mask_rows_to_text(self, rows: List[int]) -> List[str]:
+        return ["".join("#" if row & (1 << bit) else "." for bit in range(8)) for row in rows[:8]]
+
+    def render_mask_atlas(self) -> None:
+        if not hasattr(self, "mask_atlas_canvas"):
+            return
+        canvas = self.mask_atlas_canvas
+        canvas.delete("all")
+        self._mask_atlas_photo_refs = []
+        if not self.tileset:
+            canvas.configure(scrollregion=(0, 0, 1, 1))
+            return
+        selected = max(0, min(255, int(self.mask_tile_var.get()))) if hasattr(self, "mask_tile_var") else 0
+        width = max(220, canvas.winfo_width() or 360)
+        cell = 52
+        cols = max(1, width // cell)
+        count = min(256, len(self.tileset.tiles))
+        for tile in range(count):
+            x = (tile % cols) * cell
+            y = (tile // cols) * cell
+            tag = f"mask_tile_{tile}"
+            outline = "#ffff00" if tile == selected else "#555555"
+            canvas.create_rectangle(x + 2, y + 2, x + cell - 2, y + cell - 2, fill="#202020", outline=outline, width=3 if tile == selected else 1, tags=(tag,))
+            img = self.tileset.tiles[tile].resize((32, 32), Image.Resampling.NEAREST)
+            photo = ImageTk.PhotoImage(img)
+            self._mask_atlas_photo_refs.append(photo)
+            canvas.create_image(x + 10, y + 14, image=photo, anchor="nw", tags=(tag,))
+            if any(self._mask_rows_for_tile(tile)):
+                canvas.create_rectangle(x + 31, y + 4, x + cell - 5, y + 16, fill="#ff9a34", outline="", stipple="gray50", tags=(tag,))
+            canvas.create_text(x + 4, y + 4, text=str(tile), fill="#ffff80", anchor="nw", tags=(tag,))
+            canvas.tag_bind(tag, "<Button-1>", lambda _e, t=tile: self.select_mask_tile(t))
+        rows = max(1, (count + cols - 1) // cols)
+        canvas.configure(scrollregion=(0, 0, cols * cell, rows * cell))
+
+    def select_mask_tile(self, tile: int) -> None:
+        if hasattr(self, "mask_tile_var"):
+            self.mask_tile_var.set(max(0, min(255, int(tile))))
+        self.render_mask_info(tile)
+
+    def render_mask_editor(self, tile: int) -> None:
+        if not hasattr(self, "mask_editor_canvas"):
+            return
+        tile = max(0, min(255, int(tile)))
+        rows = getattr(self, "_editing_mask_rows", self._mask_rows_for_tile(tile))
+        canvas = self.mask_editor_canvas
+        canvas.delete("all")
+        self._mask_editor_photo = None
+        canvas_w = max(1, canvas.winfo_width())
+        canvas_h = max(1, canvas.winfo_height())
+        size = max(128, min(canvas_w, canvas_h) - 16)
+        origin_x = (canvas_w - size) // 2
+        origin_y = (canvas_h - size) // 2
+        cell = size // 8
+        size = cell * 8
+        if self.tileset and 0 <= tile < len(self.tileset.tiles):
+            img = self.tileset.tiles[tile].resize((size, size), Image.Resampling.NEAREST)
+            photo = ImageTk.PhotoImage(img)
+            self._mask_editor_photo = photo
+            canvas.create_image(origin_x, origin_y, image=photo, anchor="nw")
+        else:
+            canvas.create_rectangle(origin_x, origin_y, origin_x + size, origin_y + size, fill="#181818", outline="#555555")
+        for y in range(8):
+            for x in range(8):
+                solid = bool(rows[y] & (1 << x))
+                x0 = origin_x + x * cell
+                y0 = origin_y + y * cell
+                fill = "#ff9a34" if solid else ""
+                stipple = "gray50" if solid else ""
+                canvas.create_rectangle(x0, y0, x0 + cell, y0 + cell, fill=fill, stipple=stipple, outline="#ffffff", width=1)
+                if solid:
+                    canvas.create_line(x0 + 4, y0 + cell - 4, x0 + cell - 4, y0 + 4, fill="#ffffff", width=2)
+                    canvas.create_line(x0 + 4, y0 + 4, x0 + cell - 4, y0 + cell - 4, fill="#ffffff", width=1)
+        canvas.create_text(origin_x, origin_y + size + 6, text=f"Tile {tile} - left/drag solid, right/drag empty", fill="#dddddd", anchor="nw")
+
+    def render_mask_preview(self, tile: int) -> None:
+        if not hasattr(self, "mask_preview_canvas"):
+            return
+        canvas = self.mask_preview_canvas
+        canvas.delete("all")
+        self._mask_preview_photo = None
+        tile = max(0, min(255, int(tile)))
+        rows = getattr(self, "_editing_mask_rows", self._mask_rows_for_tile(tile))
+        if self.tileset and 0 <= tile < len(self.tileset.tiles):
+            img = self.tileset.tiles[tile].resize((128, 128), Image.Resampling.NEAREST).convert("RGBA")
+            overlay = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay, "RGBA")
+            cell = 16
+            for y, row in enumerate(rows):
+                for x in range(8):
+                    if row & (1 << x):
+                        x0 = x * cell
+                        y0 = y * cell
+                        draw.rectangle((x0, y0, x0 + cell - 1, y0 + cell - 1), fill=(255, 154, 52, 90))
+                        draw.line((x0, y0 + cell - 1, x0 + cell - 1, y0), fill=(255, 255, 255, 190), width=2)
+            img.alpha_composite(overlay)
+            photo = ImageTk.PhotoImage(img)
+            self._mask_preview_photo = photo
+            canvas.create_image(8, 8, image=photo, anchor="nw")
+        canvas.create_text(8, 146, text=f"Tile {tile}", fill="#dddddd", anchor="nw")
+        if hasattr(self, "mask_detail_text"):
+            lines = [
+                f"Tile {tile} collision mask",
+                "",
+                "Left-click/drag: solid",
+                "Right-click/drag: empty",
+                "",
+                *self._mask_rows_to_text(rows),
+            ]
+            self.mask_detail_text.configure(state="normal")
+            self.mask_detail_text.delete("1.0", tk.END)
+            self.mask_detail_text.insert("1.0", "\n".join(lines))
+            self.mask_detail_text.configure(state="disabled")
+
+    def paint_mask_cell(self, event: tk.Event, solid: bool) -> None:
+        if not hasattr(self, "mask_editor_canvas"):
+            return
+        tile = max(0, min(255, int(self.mask_tile_var.get()))) if hasattr(self, "mask_tile_var") else 0
+        rows = list(getattr(self, "_editing_mask_rows", self._mask_rows_for_tile(tile)))
+        canvas = self.mask_editor_canvas
+        canvas_w = max(1, canvas.winfo_width())
+        canvas_h = max(1, canvas.winfo_height())
+        size = max(128, min(canvas_w, canvas_h) - 16)
+        cell = (size // 8)
+        size = cell * 8
+        origin_x = (canvas_w - size) // 2
+        origin_y = (canvas_h - size) // 2
+        x = int((event.x - origin_x) // cell)
+        y = int((event.y - origin_y) // cell)
+        if not (0 <= x < 8 and 0 <= y < 8):
+            return
+        if solid:
+            rows[y] |= 1 << x
+        else:
+            rows[y] &= ~(1 << x)
+        self._editing_mask_rows = rows
+        self.render_mask_editor(tile)
+
+    def clear_current_mask(self) -> None:
+        self._editing_mask_rows = [0] * 8
+        self.render_mask_editor(int(self.mask_tile_var.get()))
+
+    def fill_current_mask(self) -> None:
+        self._editing_mask_rows = [0xFF] * 8
+        self.render_mask_editor(int(self.mask_tile_var.get()))
+
     def apply_mask_from_ui(self) -> None:
+        if not self.level or not hasattr(self, "mask_tile_var"):
+            return
+        tile = max(0, min(255, int(self.mask_tile_var.get())))
+        rows = self._mask_rows_to_text(list(getattr(self, "_editing_mask_rows", self._mask_rows_for_tile(tile))))
+        self.level.set_tile_mask_rows(tile, rows)
+        self._collision_tile_cache.clear()
+        self._collision_chunk_cache.clear()
+        self.set_dirty(True)
+        self.render_mask_info(tile)
+        self.render_mask_atlas()
+        self.render_map()
+        self.render_atlas()
+        self.refresh_validation()
+        self.refresh_global_summary()
+        self.status.set(f"Edited level-local collision mask for tile {tile}.")
+        return
         if not self.level or not hasattr(self, "mask_text"):
             return
         tile = max(0, min(255, int(self.mask_tile_var.get())))
