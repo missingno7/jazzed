@@ -20,6 +20,7 @@ Useful files include:
 - `BLOCKS.*`: tilesets and palettes
 - `SPRITES.*`: world/episode sprite assets
 - `MAINCHAR.000`: shared character sprites
+- `SOUNDS.000`: packed sound effects
 - music/resource files referenced by levels
 
 Different Jazz releases may have different exact file sets.

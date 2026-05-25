@@ -45,6 +45,7 @@ Good candidates:
 - binary codec round trips
 - signed byte behavior
 - dataclass property behavior
+- event semantic helpers and overlay interpretations
 - import boundary checks
 - parser behavior against synthetic minimal data, if practical
 
@@ -59,6 +60,7 @@ When moving code:
 - add tests for helpers before moving them
 - run `python tools/check_project.py`
 - avoid committing `__pycache__` or local data
+- keep user-facing docs updated when moving workflows between BUILD, LEVEL LOCAL, and the asset browser
 
 ## Common Failure Modes
 

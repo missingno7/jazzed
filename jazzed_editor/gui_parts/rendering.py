@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import tkinter as tk
-from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 try:
     from PIL import Image, ImageDraw, ImageTk
@@ -14,8 +9,7 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
 
 from ..raw_data import *
-from ..raw.event_semantics import _first_modifier_for_pickup, difficulty_badge, event_force_overlay
-from ..raw.sprites import _signed_byte
+from ..raw.event_semantics import difficulty_badge, event_force_overlay
 
 class RenderingMixin:
     def _atlas_columns(self, scale: int = 2) -> int:
@@ -486,3 +480,4 @@ class RenderingMixin:
         items.extend([r, t])
         self._brush_preview_items = items
         self.canvas.tag_raise("brush_preview")
+

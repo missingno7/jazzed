@@ -31,6 +31,8 @@ Useful areas in OpenJazz:
 - tileset loading
 - mask decoding
 - palette/background effects
+- event touch effects, movement behavior, and reserved marker IDs
+- sound and tracker/module handling references
 - event/player interaction code
 
 ## Important Distinction

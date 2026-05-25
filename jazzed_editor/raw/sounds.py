@@ -66,3 +66,4 @@ def sound_to_wav_bytes(sound: RawSound, rate: int = 11025) -> bytes:
         wav.setframerate(max(1, int(rate)))
         wav.writeframes(unsigned)
     return out.getvalue()
+

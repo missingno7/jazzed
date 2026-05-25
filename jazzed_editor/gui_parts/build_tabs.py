@@ -1,21 +1,9 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import tkinter as tk
-from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import Any, Dict, List, Optional, Tuple
-
-try:
-    from PIL import Image, ImageDraw, ImageTk
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
+from tkinter import ttk
 
 from ..raw_data import *
-from ..raw.event_semantics import _first_modifier_for_pickup
-from ..raw.sprites import _signed_byte
 
 class BuildTabsMixin:
     def _build_tiles_tab(self) -> None:
@@ -30,7 +18,7 @@ class BuildTabsMixin:
         ttk.Label(form, text="BG flag").grid(row=1, column=0, sticky="w")
         ttk.Spinbox(form, from_=0, to=1, textvariable=self.current_bg, width=7).grid(row=1, column=1, sticky="w")
         ttk.Checkbutton(form, text="also paint BG flag in Tiles mode", variable=self.paint_bg).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        ttk.Label(form, text="Fast paint updates only the affected 16×16-tile chunk while dragging.").grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(form, text="Fast paint updates only the affected 16x16-tile chunk while dragging.").grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         atlas_frame = ttk.LabelFrame(tab, text="Tile Atlas", padding=4)
         atlas_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
@@ -185,22 +173,17 @@ class BuildTabsMixin:
         self.tabs.add(tab, text="Summary")
         ttk.Label(tab, text="These are LEVEL-LOCAL shared definitions stored inside the currently opened LEVEL file. They are shared by placements in this level, but they are not game-global assets.", wraplength=360).pack(anchor="w")
         ttk.Label(tab, text="A placement in the map only says 'use event ID N'. The behavior, animation references, paths and tile collision masks below are shared tables inside this one level file.", wraplength=360).pack(anchor="w", pady=(4, 8))
-        save_box = ttk.LabelFrame(tab, text="Level-local advanced save switches", padding=6)
-        save_box.pack(fill=tk.X, pady=(0, 8))
-        ttk.Checkbutton(save_box, text="Save level-local event definitions", variable=self.save_event_defs_var).pack(anchor="w")
-        ttk.Checkbutton(save_box, text="Save level-local paths", variable=self.save_paths_var).pack(anchor="w")
-        ttk.Checkbutton(save_box, text="Save level-local collision masks", variable=self.save_masks_var).pack(anchor="w")
         nav = ttk.LabelFrame(tab, text="Jump to level-local editor", padding=6)
-        nav.pack(fill=tk.X)
-        ttk.Button(nav, text="Event definitions", command=lambda: self.define_tabs.select(self.global_event_defs_tab)).pack(fill=tk.X, pady=2)
-        ttk.Button(nav, text="Paths", command=lambda: self.define_tabs.select(self.global_paths_tab)).pack(fill=tk.X, pady=2)
-        ttk.Button(nav, text="Collision masks", command=lambda: self.define_tabs.select(self.global_masks_tab)).pack(fill=tk.X, pady=2)
-        ttk.Button(nav, text="Animations", command=lambda: self.define_tabs.select(self.global_animations_tab)).pack(fill=tk.X, pady=2)
-        self.global_summary_text = tk.Text(tab, height=14, wrap="word")
-        self.global_summary_text.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        nav.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(nav, text="Event definitions", command=lambda: self.define_tabs.select(self.level_local_event_defs_tab)).pack(fill=tk.X, pady=2)
+        ttk.Button(nav, text="Paths", command=lambda: self.define_tabs.select(self.level_local_paths_tab)).pack(fill=tk.X, pady=2)
+        ttk.Button(nav, text="Collision masks", command=lambda: self.define_tabs.select(self.level_local_masks_tab)).pack(fill=tk.X, pady=2)
+        ttk.Button(nav, text="Animations", command=lambda: self.define_tabs.select(self.level_local_animations_tab)).pack(fill=tk.X, pady=2)
+        self.level_local_summary_text = tk.Text(tab, height=14, wrap="word")
+        self.level_local_summary_text.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
-    def refresh_global_summary(self) -> None:
-        if not hasattr(self, "global_summary_text"):
+    def refresh_level_local_summary(self) -> None:
+        if not hasattr(self, "level_local_summary_text"):
             return
         counts = self.event_usage_counts() if self.level else {}
         used_events = len([k for k, v in counts.items() if k and v])
@@ -214,10 +197,10 @@ class BuildTabsMixin:
         lines = [
             "What is LEVEL-LOCAL in a JJ1 level:",
             "",
-            "• Event definitions: shared behavior table for event IDs 0..126.",
-            "• Paths: 16 shared movement paths used by some object behaviors.",
-            "• Collision masks: 8x8 collision data per tile; every placement of that tile uses the same mask.",
-            "• Animations: 128 shared animation definitions; events reference them by ID.",
+            "- Event definitions: shared behavior table for event IDs 0..126.",
+            "- Paths: 16 shared movement paths used by some object behaviors.",
+            "- Collision masks: 8x8 collision data per tile; every placement of that tile uses the same mask.",
+            "- Animations: 128 shared animation definitions; events reference them by ID.",
             "",
             f"Used event IDs in this map: {used_events}",
             f"Non-empty paths: {nonempty_paths}/16",
@@ -225,15 +208,15 @@ class BuildTabsMixin:
             "",
             "Safe workflow: edit placements in BUILD, then edit LEVEL-LOCAL shared definitions here only when you really want every placement/reference in this level to change.",
         ]
-        self.global_summary_text.configure(state="normal")
-        self.global_summary_text.delete("1.0", tk.END)
-        self.global_summary_text.insert("1.0", "\n".join(lines))
-        self.global_summary_text.configure(state="disabled")
+        self.level_local_summary_text.configure(state="normal")
+        self.level_local_summary_text.delete("1.0", tk.END)
+        self.level_local_summary_text.insert("1.0", "\n".join(lines))
+        self.level_local_summary_text.configure(state="disabled")
 
     def _build_masks_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(tab, text="Masks")
-        self.global_masks_tab = tab
+        self.level_local_masks_tab = tab
         ttk.Checkbutton(tab, text="Show collision overlay on map", variable=self.show_collision, command=self.render_map).pack(anchor="w")
         row = ttk.Frame(tab)
         row.pack(fill=tk.X, pady=(6, 2))
@@ -268,3 +251,7 @@ class BuildTabsMixin:
         self.mask_editor_canvas.bind("<Button-3>", lambda e: self.paint_mask_cell(e, False))
         self.mask_editor_canvas.bind("<B3-Motion>", lambda e: self.paint_mask_cell(e, False))
         self.mask_editor_canvas.bind("<Configure>", lambda _e: self.render_mask_editor(self.mask_tile_var.get()))
+
+
+
+

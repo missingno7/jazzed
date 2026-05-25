@@ -1,21 +1,16 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import ttk
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from PIL import Image, ImageDraw, ImageTk
+    from PIL import Image, ImageTk
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
 
 from .raw_data import *
-from .raw.event_semantics import _first_modifier_for_pickup
-from .raw.sprites import _signed_byte
 from .gui_parts.assets import AssetsMixin
 from .gui_parts.build_tabs import BuildTabsMixin
 from .gui_parts.editing import EditingMixin
@@ -75,9 +70,6 @@ class LevelEditorApp(
         self.lock_objects = tk.BooleanVar(value=False)
         self.lock_start = tk.BooleanVar(value=False)
         self.highlight_event_id = tk.IntVar(value=0)
-        self.save_event_defs_var = tk.BooleanVar(value=False)
-        self.save_paths_var = tk.BooleanVar(value=False)
-        self.save_masks_var = tk.BooleanVar(value=False)
         self.object_category_filter = tk.StringVar(value="all")
         self.object_palette_view = tk.StringVar(value="atlas")
         self.selected_path = tk.IntVar(value=0)
@@ -291,7 +283,6 @@ class LevelEditorApp(
 
 
         # Reserved markers are numeric IDs, not a cloneable raw template.
-
 
 
 

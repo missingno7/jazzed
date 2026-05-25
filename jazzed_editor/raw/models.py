@@ -448,3 +448,4 @@ class TilesetData:
     sky_palette: List[Tuple[int, int, int]]
     tiles: List[Image.Image]
     atlas: Image.Image
+

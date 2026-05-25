@@ -21,9 +21,9 @@ Feature-specific GUI behavior lives in `jazzed_editor/gui_parts/`:
 
 - `overview.py`: overview/jump helper tabs
 - `assets.py`: assets browser tabs and previews
-- `build_tabs.py`: BUILD workspace tabs
-- `event_defs.py`: event definition editor
-- `level_local.py`: animations, bullets, paths, masks
+- `build_tabs.py`: BUILD workspace tabs and LEVEL LOCAL summary/masks tab construction
+- `event_defs.py`: level-local event definition editor
+- `level_local.py`: animations, bullets, paths, masks editor logic
 - `level_io.py`: load/save, dirty state, undo/redo, validation, metadata
 - `objects.py`: object/event palettes, object lists, replacements
 - `rendering.py`: map rendering, atlas rendering, overlays, background/collision caches
@@ -42,8 +42,9 @@ Modules:
 - `constants.py`: dimensions, table sizes, IDs, and format constants
 - `codecs.py`: RLE, palettes, little-endian helpers, signed byte conversion
 - `event_semantics.py`: human-readable event meanings and categories
-- `models.py`: dataclasses for level, tileset, sprites, events, paths, bullets
+- `models.py`: dataclasses for level, tileset, sprites, events, animations, paths, bullets, and save serialization
 - `parser.py`: level, tileset, and sprite loading
+- `sounds.py`: `SOUNDS.000` parsing and WAV conversion
 - `sprites.py`: sprite frame decoding helpers
 
 `jazzed_editor/raw_data.py` is a compatibility facade for old imports.

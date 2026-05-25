@@ -6,7 +6,7 @@ The repository intentionally does not include copyrighted game assets. Put your 
 
 ## Current Status
 
-Jazzed is a working editor prototype with a Tk/Pillow GUI. It can load JJ1 levels, render maps and tilesets, inspect and edit level-local event definitions, masks, animations, paths, bullets, object placements, metadata, and save modified level files.
+Jazzed is a working editor prototype with a Tk/Pillow GUI. It can load JJ1 levels, render maps and tilesets, inspect and edit level-local event definitions, masks, animations, paths, bullets, object placements, metadata, and save modified level files. It also includes game asset browsers for tilesets, sprites, sounds, and music/resource files.
 
 OpenJazz source code is useful as a reference while developing the parser, but it is not required at runtime and is not part of the public repository.
 
@@ -25,6 +25,7 @@ jazzed_editor/
     event_semantics.py      Event names, categories, descriptions
     models.py               Level, tileset, sprite, path, bullet data classes
     parser.py               JJ1 level/tileset/sprite parsing
+    sounds.py               SOUNDS.000 parsing and WAV conversion helpers
     sprites.py              Sprite frame decoding
 tests/                      Lightweight regression tests
 tools/                      Developer helper scripts

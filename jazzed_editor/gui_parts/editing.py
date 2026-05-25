@@ -1,21 +1,9 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import tkinter as tk
-from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import Any, Dict, List, Optional, Tuple
-
-try:
-    from PIL import Image, ImageDraw, ImageTk
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
+from typing import Optional, Tuple
 
 from ..raw_data import *
-from ..raw.event_semantics import _first_modifier_for_pickup
-from ..raw.sprites import _signed_byte
 
 class EditingMixin:
     def canvas_to_cell(self, event: tk.Event) -> Optional[Tuple[int, int]]:

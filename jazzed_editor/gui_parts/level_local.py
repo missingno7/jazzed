@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import tkinter as tk
-from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -14,14 +10,12 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
 
 from ..raw_data import *
-from ..raw.event_semantics import _first_modifier_for_pickup
-from ..raw.sprites import _signed_byte
 
 class LevelLocalMixin:
     def _build_animations_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(tab, text="Animations")
-        self.global_animations_tab = tab
+        self.level_local_animations_tab = tab
 
         body = ttk.PanedWindow(tab, orient=tk.HORIZONTAL)
         body.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
@@ -146,7 +140,7 @@ class LevelLocalMixin:
             field = ttk.Frame(parent)
             field.grid(row=row, column=1, sticky="w", pady=2)
             ttk.Spinbox(field, from_=0, to=255, width=7, textvariable=var).pack(side=tk.LEFT)
-            ttk.Button(field, text="Sprite atlas…", command=lambda k=f"sprite_{i}": self.open_sprite_picker_for_bullet(k)).pack(side=tk.LEFT, padx=(4, 0))
+            ttk.Button(field, text="Sprite atlas...", command=lambda k=f"sprite_{i}": self.open_sprite_picker_for_bullet(k)).pack(side=tk.LEFT, padx=(4, 0))
             ttk.Label(parent, text="x").grid(row=row, column=2, sticky="e")
             xv = tk.IntVar(value=0)
             self.bullet_edit_vars[f"xspeed_{i}"] = xv
@@ -176,7 +170,7 @@ class LevelLocalMixin:
             else:
                 ttk.Spinbox(field, from_=frm, to=to, width=7, textvariable=var).pack(side=tk.LEFT)
             if key == "finish_anim":
-                ttk.Button(field, text="Atlas…", command=lambda k=key: self.open_animation_picker_for_bullet(k)).pack(side=tk.LEFT, padx=(4, 0))
+                ttk.Button(field, text="Atlas...", command=lambda k=key: self.open_animation_picker_for_bullet(k)).pack(side=tk.LEFT, padx=(4, 0))
             if key in {"finish_sound", "start_sound"}:
                 ttk.Button(field, text="Play", command=lambda v=var: self.play_sound_id(self.sound_id_from_choice(v.get()))).pack(side=tk.LEFT, padx=(4, 0))
             row += 1
@@ -324,7 +318,7 @@ class LevelLocalMixin:
     def _build_paths_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(tab, text="Paths")
-        self.global_paths_tab = tab
+        self.level_local_paths_tab = tab
         ttk.Label(tab, text="Special event paths: 16 level-local movement paths. Display is read-only/diagnostic for now; use it to understand platforms, flying enemies and scripted objects.").pack(anchor="w")
         row = ttk.Frame(tab)
         row.pack(fill=tk.X, pady=(6, 4))
@@ -333,7 +327,6 @@ class LevelLocalMixin:
         self.path_combo.pack(side=tk.LEFT, padx=(6, 0))
         self.path_combo.bind("<<ComboboxSelected>>", self.on_path_select)
         ttk.Checkbutton(row, text="Show path overlay", variable=self.show_paths, command=self.render_map).pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Checkbutton(row, text="Save modified level-local paths", variable=self.save_paths_var).pack(side=tk.LEFT, padx=(10, 0))
         self.path_canvas = tk.Canvas(tab, background="#181818", height=220, highlightthickness=0)
         self.path_canvas.pack(fill=tk.X, expand=False, pady=(4, 6))
         edit = ttk.LabelFrame(tab, text="Editable path deltas", padding=4)
@@ -686,8 +679,8 @@ class LevelLocalMixin:
             self.path_combo.current(path_id)
         self.render_path_info(path_id)
         self.render_map()
-        self.refresh_global_summary()
-        self.status.set(f"Edited global path {path_id}. Enable/save global paths is on; Save as... writes it.")
+        self.refresh_level_local_summary()
+        self.status.set(f"Edited level-local path {path_id}. Save writes it.")
 
     def _mask_rows_for_tile(self, tile: int) -> List[int]:
         if not self.level:
@@ -857,31 +850,7 @@ class LevelLocalMixin:
         self.render_map()
         self.render_atlas()
         self.refresh_validation()
-        self.refresh_global_summary()
-        self.status.set(f"Edited level-local collision mask for tile {tile}.")
-        return
-        if not self.level or not hasattr(self, "mask_text"):
-            return
-        tile = max(0, min(255, int(self.mask_tile_var.get())))
-        rows = []
-        for line in self.mask_text.get("1.0", tk.END).splitlines():
-            stripped = line.strip()
-            if len(stripped) >= 8 and all(ch in ".#01Xx@█" for ch in stripped[:8]):
-                rows.append(stripped[:8])
-            if len(rows) == 8:
-                break
-        if len(rows) != 8:
-            messagebox.showerror("Invalid mask", "Could not find 8 editable rows containing only . # 0 1 X characters.")
-            return
-        self.level.set_tile_mask_rows(tile, rows)
-        self._collision_tile_cache.clear()
-        self._collision_chunk_cache.clear()
-        self.set_dirty(True)
-        self.render_mask_info(tile)
-        self.render_map()
-        self.render_atlas()
-        self.refresh_validation()
-        self.refresh_global_summary()
+        self.refresh_level_local_summary()
         self.status.set(f"Edited level-local collision mask for tile {tile}.")
 
     def apply_animation_from_ui(self) -> None:
@@ -903,8 +872,8 @@ class LevelLocalMixin:
         self.on_anim_tree_select(tk.Event())
         self.render_map()
         self.refresh_validation()
-        self.refresh_global_summary()
-        self.status.set(f"Edited global animation {anim_id}.")
+        self.refresh_level_local_summary()
+        self.status.set(f"Edited level-local animation {anim_id}.")
 
     def draw_path_overlay(self, draw: ImageDraw.ImageDraw) -> None:
         if not self.level or not self.level.path_defs:
@@ -929,3 +898,6 @@ class LevelLocalMixin:
             prev = cur
         draw.ellipse((x-4, y-4, x+4, y+4), outline=(255, 255, 80, 255), width=2)
         draw.text((anchor_x * TILE_SIZE + 2, anchor_y * TILE_SIZE + 2), f"P{path_id}", fill=(80, 255, 255, 255))
+
+
+

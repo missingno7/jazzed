@@ -1,21 +1,8 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-import tkinter as tk
-from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import Any, Dict, List, Optional, Tuple
-
-try:
-    from PIL import Image, ImageDraw, ImageTk
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
+from tkinter import ttk
 
 from ..raw_data import *
-from ..raw.event_semantics import _first_modifier_for_pickup
-from ..raw.sprites import _signed_byte
 
 class OverviewMixin:
     def _build_build_overview_tab(self) -> None:
@@ -63,9 +50,9 @@ class OverviewMixin:
         actions = ttk.LabelFrame(tab, text="Definition shortcuts", padding=6)
         actions.pack(fill=tk.X)
         ttk.Button(actions, text="Object Types", command=lambda: self.define_tabs.select(self.object_types_tab)).pack(fill=tk.X, pady=2)
-        ttk.Button(actions, text="Event Definitions", command=lambda: self.define_tabs.select(self.global_event_defs_tab)).pack(fill=tk.X, pady=2)
-        ttk.Button(actions, text="Animations", command=lambda: self.define_tabs.select(self.global_animations_tab)).pack(fill=tk.X, pady=2)
-        ttk.Button(actions, text="Paths", command=lambda: self.define_tabs.select(self.global_paths_tab)).pack(fill=tk.X, pady=2)
+        ttk.Button(actions, text="Event Definitions", command=lambda: self.define_tabs.select(self.level_local_event_defs_tab)).pack(fill=tk.X, pady=2)
+        ttk.Button(actions, text="Animations", command=lambda: self.define_tabs.select(self.level_local_animations_tab)).pack(fill=tk.X, pady=2)
+        ttk.Button(actions, text="Paths", command=lambda: self.define_tabs.select(self.level_local_paths_tab)).pack(fill=tk.X, pady=2)
         ttk.Button(actions, text="Game Globals", command=lambda: self.workspace_tabs.select(self.game_globals_workspace)).pack(fill=tk.X, pady=2)
         ttk.Button(actions, text="Back to BUILD", command=lambda: self.workspace_tabs.select(self.build_workspace)).pack(fill=tk.X, pady=(8, 2))
 
@@ -123,3 +110,4 @@ class OverviewMixin:
             "• If it is hardcoded in Jazz 1 DOS engine behavior / OpenJazz reference behavior, it is ENGINE GLOBAL and should be documented/read-only unless the editor later supports code patches.",
         ]))
         note.configure(state="disabled")
+

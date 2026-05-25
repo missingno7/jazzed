@@ -1,21 +1,11 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Any, Dict, List, Optional, Tuple
-
-try:
-    from PIL import Image, ImageDraw, ImageTk
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
+from typing import List, Tuple
 
 from ..raw_data import *
-from ..raw.event_semantics import _first_modifier_for_pickup
-from ..raw.sprites import _signed_byte
 
 class LevelIoMixin:
     def _build_validation_tab(self) -> None:
@@ -117,7 +107,6 @@ class LevelIoMixin:
             f"blocks={self.tileset.path.name}, tiles={len(self.tileset.tiles)}, "
             f"sprites={len(self.spriteset.sprites) if self.spriteset else 0}"
         )
-        self.populate_events()
         self.refresh_event_def_selector()
         self.refresh_object_palette()
         self.refresh_objects()
@@ -130,7 +119,7 @@ class LevelIoMixin:
         self.populate_paths()
         self.render_mask_info(0)
         self.refresh_validation()
-        self.refresh_global_summary()
+        self.refresh_level_local_summary()
         self.render_map()
 
     def reload_current(self) -> None:
@@ -340,21 +329,6 @@ class LevelIoMixin:
             self.render_mask_editor(tile)
         if hasattr(self, "render_mask_atlas"):
             self.render_mask_atlas()
-        if not hasattr(self, "mask_text"):
-            return
-        start = tile * 8
-        lines = [f"Tile {tile} collision mask:", "", "Edit only the 8 rows below (# solid, . empty), then click Apply 8x8 mask:", "Leftmost character is mask bit 0 / left side of tile.", ""]
-        if start + 8 <= len(self.level.masks):
-            for row in self.level.masks[start:start + 8]:
-                lines.append("".join("#" if row & (1 << bit) else "." for bit in range(8)))
-            lines.extend(["", "# = solid low-res mask bit, . = empty"] )
-        else:
-            lines.append("No mask data for this tile index.")
-        self.mask_text.configure(state="normal")
-        self.mask_text.delete("1.0", tk.END)
-        self.mask_text.insert("1.0", "\n".join(lines))
-        # Keep editable so the user can patch the global tile mask.
-        self.mask_text.configure(state="normal")
 
     def _save_to_path(self, path: Path) -> bool:
         if not self.level:

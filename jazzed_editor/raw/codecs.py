@@ -120,3 +120,4 @@ def decode_palette(data: bytes, pos: int) -> Tuple[List[Tuple[int, int, int]], i
         palette.append(((r << 2) + (r >> 4), (g << 2) + (g >> 4), (b << 2) + (b >> 4)))
     return palette, start, payload, end
 
+

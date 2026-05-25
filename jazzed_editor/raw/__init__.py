@@ -22,3 +22,4 @@ def __getattr__(name: str):
 
         return JJ1Parser
     raise AttributeError(name)
+

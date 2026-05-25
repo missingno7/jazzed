@@ -14,3 +14,4 @@ def main(argv: Optional[List[str]] = None) -> int:
     app = LevelEditorApp(Path(args.game_dir).expanduser().resolve())
     app.mainloop()
     return 0
+

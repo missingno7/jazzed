@@ -4,8 +4,6 @@ from typing import List, Optional, Tuple
 
 from PIL import Image
 
-from .constants import TKEY
-from .codecs import signed_byte, _signed_byte
 from .models import SpriteFrame
 
 
@@ -80,3 +78,4 @@ def _read_one_jj1_sprite(data: bytes, p: int, index: int, palette: List[Tuple[in
             return None, len(data)
         pixels = _unscramble_pixels(data[cur:cur + length], length)
         return _sprite_from_pixels(index, pixels, width, height, palette, xoff, yoff), cur + length
+

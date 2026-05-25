@@ -25,23 +25,23 @@ PICKUP_MODIFIER_MEANINGS = {
     10: ("Checkpoint", "touch trigger/pickup; sets checkpoint"),
     11: ("Generic score item", "touch pickup; item with score only"),
     12: ("Rapid fire", "touch pickup; increases fire speed"),
-    15: ("Ammo weapon 0 ×15", "touch ammo pickup"),
-    16: ("Ammo weapon 1 ×15", "touch ammo pickup"),
-    17: ("Ammo weapon 2 ×15", "touch ammo pickup"),
-    18: ("Ammo weapon 0 ×2", "small ammo pickup"),
-    19: ("Ammo weapon 1 ×2", "small ammo pickup"),
-    20: ("Ammo weapon 2 ×2", "small ammo pickup"),
+    15: ("Ammo weapon 0 x15", "touch ammo pickup"),
+    16: ("Ammo weapon 1 x15", "touch ammo pickup"),
+    17: ("Ammo weapon 2 x15", "touch ammo pickup"),
+    18: ("Ammo weapon 0 x2", "small ammo pickup"),
+    19: ("Ammo weapon 1 x2", "small ammo pickup"),
+    20: ("Ammo weapon 2 x2", "small ammo pickup"),
     26: ("Fast feet box", "touch pickup; speed boost + music tempo"),
     27: ("End of level", "touch trigger; exits level"),
-    30: ("TNT ammo ×1", "touch ammo pickup"),
+    30: ("TNT ammo x1", "touch ammo pickup"),
     31: ("Water level trigger", "touch trigger; sets water level to gridY+1"),
     33: ("1-hit shield", "touch pickup; shield=1"),
     34: ("Bird companion", "touch pickup; spawns bird helper"),
     35: ("Airboard / flight", "touch pickup; enables flight"),
     36: ("4-hit shield", "touch pickup; shield=5"),
     37: ("Diamond", "touch pickup; enables gem/diamond state"),
-    39: ("Ammo weapon 3 ×15", "touch ammo pickup"),
-    40: ("Ammo weapon 3 ×2", "small ammo pickup"),
+    39: ("Ammo weapon 3 x15", "touch ammo pickup"),
+    40: ("Ammo weapon 3 x2", "small ammo pickup"),
     41: ("Bonus level / end trigger", "touch trigger; may set next level via multiA/multiB"),
 }
 
@@ -169,9 +169,9 @@ def semantic_event_lines(event_id: int, raw: bytes, name: str = "") -> List[str]
     lines = [
         f"Semantic category: {category}",
         f"Difficulty gate: {difficulty_label(raw[0])} - {difficulty_description(raw[0])}",
-        f"Modifier: {modifier} — {modifier_label}",
+        f"Modifier: {modifier} - {modifier_label}",
         f"  {modifier_detail}",
-        f"Movement: {movement} — {movement_label}",
+        f"Movement: {movement} - {movement_label}",
     ]
 
     if category == "shootable pickup/container":
@@ -195,11 +195,11 @@ def semantic_event_lines(event_id: int, raw: bytes, name: str = "") -> List[str]
         lines.append("Weapon/ammo identity is encoded by modifier, not by the generic pickup category.")
 
     if points:
-        lines.append(f"Score added on successful collection/kill: points ×10 = {points * 10}.")
+        lines.append(f"Score added on successful collection/kill: points x10 = {points * 10}.")
     if strength:
         lines.append(f"Strength/health/hits: {strength}. Meaning depends on modifier/movement.")
     if raw[12]:
-        lines.append(f"Bullet type reference: {raw[12]} — {bullet_type_label(raw[12])}.")
+        lines.append(f"Bullet type reference: {raw[12]} - {bullet_type_label(raw[12])}.")
     if raw[13]:
         lines.append(f"Bullet period: {raw[13]}.")
     if raw[21]:
@@ -218,7 +218,7 @@ def semantic_event_lines(event_id: int, raw: bytes, name: str = "") -> List[str]
         value = raw[idx] if idx is not None and idx < len(raw) else "?"
         if field == "speed":
             value = raw[15] + 1
-        lines.append(f"{field}: {value} — {desc}")
+        lines.append(f"{field}: {value} - {desc}")
 
     return lines
 
@@ -238,7 +238,7 @@ def event_field_label_for(raw: bytes, idx: int) -> str:
         8: "magnitude / signed parameter",
         9: "strength / health / required hits",
         10: "modifier / touch effect",
-        11: "score points (×10)",
+        11: "score points (x10)",
         12: "bullet type",
         13: "bullet period",
         15: "speed minus 1",
@@ -609,7 +609,7 @@ def friendly_event_name(ev: "EventDefinition") -> str:
     if left or right:
         details.append(f"anim {left}/{right}")
     if details:
-        return f"{base} — {', '.join(details)}"
+        return f"{base} - {', '.join(details)}"
     return base
 
 
@@ -633,3 +633,6 @@ def object_tooltip(ev: "EventDefinition") -> str:
         f"Animations: left/right={raw[5] & 0x7F}/{raw[6] & 0x7F}, "
         f"finish={raw[28] & 0x7F}/{raw[29] & 0x7F}, shoot={raw[30] & 0x7F}/{raw[31] & 0x7F}"
     )
+
+
+

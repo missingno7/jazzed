@@ -1,33 +1,18 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import tkinter as tk
-from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import Any, Dict, List, Optional, Tuple
+from tkinter import messagebox
+from typing import Dict, List, Optional
 
 try:
-    from PIL import Image, ImageDraw, ImageTk
+    from PIL import Image, ImageTk
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
 
 from ..raw_data import *
-from ..raw.event_semantics import _first_modifier_for_pickup, difficulty_badge, event_force_overlay
-from ..raw.sprites import _signed_byte
+from ..raw.event_semantics import difficulty_badge, event_force_overlay
 
 class ObjectsMixin:
-    def populate_events(self) -> None:
-        if not hasattr(self, "event_list"):
-            return
-        self.event_list.delete(0, tk.END)
-        if not self.level:
-            return
-        for i, name in enumerate(self.level.event_names):
-            label = name or f"event_{i:03d}"
-            self.event_list.insert(tk.END, f"{i:03d}: {label}")
-
     def event_usage_counts(self) -> Dict[int, int]:
         counts: Dict[int, int] = {}
         if not self.level:
@@ -254,19 +239,6 @@ class ObjectsMixin:
         event_id = int(selection[0])
         self.select_palette_event(event_id)
 
-    def use_palette_event(self) -> None:
-        selection = self.palette_tree.selection()
-        if not selection:
-            self.status.set("No palette event selected.")
-            return
-        event_id = int(selection[0])
-        self.current_event.set(event_id)
-        self.tool_mode.set("events")
-        self.workspace_tabs.select(self.build_workspace)
-        self.build_tabs.select(self.objects_tab)
-        self._sync_event_selection()
-        self.status.set(f"Using event {event_id} as object brush. Left-click map to place; right-click erases.")
-
     def refresh_objects(self) -> None:
         if not hasattr(self, "object_tree"):
             return
@@ -384,7 +356,7 @@ class ObjectsMixin:
         self.refresh_object_types()
         self.render_event_definition(new_id)
         self.render_map()
-        self.status.set(f"Duplicated event type {old_id} into free slot {new_id} and changed only selected placement ({x},{y}). Enable/save event definitions to persist the new type.")
+        self.status.set(f"Duplicated event type {old_id} into free slot {new_id} and changed only selected placement ({x},{y}). Save writes the new level-local type.")
 
     def replace_selected_object_with_brush(self) -> None:
         if not self.level or not self.selected_object:
@@ -430,24 +402,9 @@ class ObjectsMixin:
         self.render_map()
         self.status.set(f"Replaced {changed} placement(s): event {old_id} -> {new_id}. Definitions were not changed.")
 
-    def on_event_select(self, _event: tk.Event) -> None:
-        if not hasattr(self, "event_list"):
-            return
-        selection = self.event_list.curselection()
-        if selection:
-            event_id = int(selection[0])
-            self.current_event.set(event_id)
-            self.tool_mode.set("events")
-            self.render_event_definition(event_id)
-            self.status.set(f"Selected event {event_id}; mode set to Events")
-
     def _sync_event_selection(self) -> None:
         event_id = max(0, min(126, int(self.current_event.get())))
         self.current_event.set(event_id)
-        if hasattr(self, "event_list"):
-            self.event_list.selection_clear(0, tk.END)
-            self.event_list.selection_set(event_id)
-            self.event_list.see(event_id)
         self.render_event_definition(event_id)
 
     def on_object_tree_select(self, _event: tk.Event) -> None:

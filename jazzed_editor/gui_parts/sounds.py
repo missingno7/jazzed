@@ -84,3 +84,4 @@ class SoundsMixin:
             self.status.set("Selected sound clip is empty.")
             return
         self._play_wav_bytes(sound_to_wav_bytes(sound, rate), f"{sound.name or 'unnamed sound'} @ {rate} Hz")
+

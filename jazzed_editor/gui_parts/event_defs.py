@@ -1,21 +1,17 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import tkinter as tk
-from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import Any, Dict, List, Optional, Tuple
+from tkinter import ttk
+from typing import Any, Dict, List
 
 try:
-    from PIL import Image, ImageDraw, ImageTk
+    from PIL import Image, ImageTk
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("Pillow is required. Install it with: python -m pip install pillow") from exc
 
 from ..raw_data import *
 from ..raw.event_semantics import _first_modifier_for_pickup, touch_mechanism_summary
-from ..raw.sprites import _signed_byte
+from ..raw.codecs import signed_byte
 
 class EventDefsMixin:
     def event_def_selector_values(self) -> List[str]:
@@ -32,7 +28,7 @@ class EventDefsMixin:
                 label = "Unused"
             else:
                 label = friendly_event_name(ev)
-            values.append(f"{event_id:03d}  {label}  ({used}×)")
+            values.append(f"{event_id:03d}  {label}  ({used}x)")
         return values
 
     def refresh_event_def_selector(self) -> None:
@@ -169,11 +165,11 @@ class EventDefsMixin:
             else:
                 ttk.Spinbox(field, from_=frm, to=to, width=8, textvariable=var).pack(side=tk.LEFT)
             if key in {"left_anim", "right_anim", "finish_left", "finish_right", "shoot_left", "shoot_right"}:
-                ttk.Button(field, text="Atlas…", command=lambda k=key: self.open_animation_picker_for(k)).pack(side=tk.LEFT, padx=(4, 0))
+                ttk.Button(field, text="Atlas...", command=lambda k=key: self.open_animation_picker_for(k)).pack(side=tk.LEFT, padx=(4, 0))
             if key == "bullet":
-                ttk.Button(field, text="Pick…", command=lambda k=key: self.open_bullet_picker_for(k)).pack(side=tk.LEFT, padx=(4, 0))
+                ttk.Button(field, text="Pick...", command=lambda k=key: self.open_bullet_picker_for(k)).pack(side=tk.LEFT, padx=(4, 0))
             if key == "destroy_tile":
-                ttk.Button(field, text="Tile atlas…", command=lambda k=key: self.open_tile_picker_for(k)).pack(side=tk.LEFT, padx=(4, 0))
+                ttk.Button(field, text="Tile atlas...", command=lambda k=key: self.open_tile_picker_for(k)).pack(side=tk.LEFT, padx=(4, 0))
             if key == "sound":
                 ttk.Button(field, text="Play", command=lambda v=var: self.play_sound_id(self.sound_id_from_choice(v.get()))).pack(side=tk.LEFT, padx=(4, 0))
             if hint:
@@ -220,12 +216,12 @@ class EventDefsMixin:
             row = add_combo(row, "pickup_modifier", "Pickup / reward effect", PICKUP_COMBO_LABELS, cur)
             row = add_check(row, "shootable", "Requires shooting / destroying before pickup", raw[9] > 0)
             row = add_spin(row, "strength", "Hits / strength", max(1, raw[9]) if raw[9] else 1, 0, 255)
-            row = add_spin(row, "points", "Score points ×10", raw[11], 0, 255)
+            row = add_spin(row, "points", "Score points x10", raw[11], 0, 255)
             row = add_spin(row, "sound", "Pickup sound", raw[21], 0, 255)
         elif concept == "Enemy / hazard":
             row = add_combo(row, "movement", "Movement behavior", [f"{k}: {v[0]}" for k, v in sorted(MOVEMENT_FIELD_MEANINGS.items())], f"{raw[4]}: {movement_meaning_detail(raw[4])[0]}")
             row = add_spin(row, "strength", "Health / hits to kill", raw[9] or 1, 1, 255)
-            row = add_spin(row, "points", "Kill score points ×10", raw[11], 0, 255)
+            row = add_spin(row, "points", "Kill score points x10", raw[11], 0, 255)
             row = add_spin(row, "bullet", "Bullet type", raw[12], 0, 31)
             row = add_spin(row, "bullet_period", "Bullet period", raw[13], 0, 255)
             row = add_spin(row, "speed", "Movement speed divisor", raw[15] + 1, 1, 256)
@@ -236,20 +232,20 @@ class EventDefsMixin:
             row = add_spin(row, "pieces", "Debris pieces", raw[25], 0, 255)
             row = add_spin(row, "sound", "Destroy sound", raw[21], 0, 255)
         elif concept == "Spring / bounce":
-            row = add_spin(row, "magnitude_signed", "Bounce magnitude (signed)", _signed_byte(raw[8]), -128, 127)
+            row = add_spin(row, "magnitude_signed", "Bounce magnitude (signed)", signed_byte(raw[8]), -128, 127)
             row = add_spin(row, "sound", "Spring sound", raw[21], 0, 255)
         elif concept == "Warp trigger":
             row = add_spin(row, "warp_x", "Target X tile", raw[22], 0, 255)
             row = add_spin(row, "warp_y", "Target Y tile", raw[23], 0, 255)
             row = add_spin(row, "sound", "Sound", raw[21], 0, 255)
         elif concept == "Conveyor belt":
-            row = add_spin(row, "magnitude_signed", "Push magnitude (signed)", _signed_byte(raw[8]), -128, 127)
+            row = add_spin(row, "magnitude_signed", "Push magnitude (signed)", signed_byte(raw[8]), -128, 127)
             row = add_spin(row, "sound", "Sound", raw[21], 0, 255)
         elif concept == "Float / blower":
             mode = "vertical lift (multiB set)" if raw[23] else "horizontal float (multiB clear)"
             row = add_combo(row, "float_mode", "Float mode", ["vertical lift (multiB set)", "horizontal float (multiB clear)"], mode)
-            row = add_spin(row, "multi_a_signed", "Lift height / strength (multiA)", _signed_byte(raw[22]), -128, 127)
-            row = add_spin(row, "magnitude_signed", "Horizontal direction sign (magnitude)", _signed_byte(raw[8]), -128, 127)
+            row = add_spin(row, "multi_a_signed", "Lift height / strength (multiA)", signed_byte(raw[22]), -128, 127)
+            row = add_spin(row, "magnitude_signed", "Horizontal direction sign (magnitude)", signed_byte(raw[8]), -128, 127)
             row = add_spin(row, "sound", "Sound", raw[21], 0, 255)
             for line in touch_mechanism_summary(raw):
                 ttk.Label(self.event_concept_frame, text=line, wraplength=520).grid(row=row, column=0, columnspan=3, sticky="w", pady=1)
@@ -259,8 +255,8 @@ class EventDefsMixin:
             mode = "vertical/up mode (multiB set)" if raw[23] else "horizontal mode (multiB clear)"
             row = add_combo(row, "movement", "Repel movement", ["37: Repel / sucker tube", "38: Repel / sucker tube variant"], movement_current)
             row = add_combo(row, "repel_mode", "Repel mode", ["vertical/up mode (multiB set)", "horizontal mode (multiB clear)"], mode)
-            row = add_spin(row, "multi_a_signed", "Height / strength (multiA)", _signed_byte(raw[22]), -128, 127)
-            row = add_spin(row, "magnitude_signed", "Horizontal direction sign (magnitude)", _signed_byte(raw[8]), -128, 127)
+            row = add_spin(row, "multi_a_signed", "Height / strength (multiA)", signed_byte(raw[22]), -128, 127)
+            row = add_spin(row, "magnitude_signed", "Horizontal direction sign (magnitude)", signed_byte(raw[8]), -128, 127)
             row = add_spin(row, "sound", "Sound", raw[21], 0, 255)
             for line in touch_mechanism_summary(raw):
                 ttk.Label(self.event_concept_frame, text=line, wraplength=520).grid(row=row, column=0, columnspan=3, sticky="w", pady=1)
@@ -273,7 +269,7 @@ class EventDefsMixin:
             row = add_combo(row, "movement", "Movement behavior", [f"{k}: {v[0]}" for k, v in sorted(MOVEMENT_FIELD_MEANINGS.items())], f"{raw[4]}: {movement_meaning_detail(raw[4])[0]}")
             row = add_combo(row, "modifier", "Modifier / touch behavior", [f"{k}: {v[0]}" for k, v in sorted(MODIFIER_TOUCH_MEANINGS.items())], f"{raw[10]}: {modifier_meaning(raw[10])[0]}")
             row = add_spin(row, "strength", "Strength / health / hits", raw[9], 0, 255)
-            row = add_spin(row, "points", "Score points ×10", raw[11], 0, 255)
+            row = add_spin(row, "points", "Score points x10", raw[11], 0, 255)
             row = add_spin(row, "magnitude", "Magnitude", raw[8], 0, 255)
             row = add_spin(row, "multi_a", "multiA", raw[22], 0, 255)
             row = add_spin(row, "multi_b", "multiB", raw[23], 0, 255)
@@ -596,7 +592,7 @@ class EventDefsMixin:
         elif concept == "Spring / bounce":
             raw[10] = 29
             raw[9] = 0
-            raw[8] = get_int("magnitude_signed", _signed_byte(raw[8])) & 0xFF
+            raw[8] = get_int("magnitude_signed", signed_byte(raw[8])) & 0xFF
             raw[21] = get_int("sound", raw[21])
         elif concept == "Warp trigger":
             raw[10] = 13
@@ -607,21 +603,21 @@ class EventDefsMixin:
         elif concept == "Conveyor belt":
             raw[10] = 28
             raw[9] = 0
-            raw[8] = get_int("magnitude_signed", _signed_byte(raw[8])) & 0xFF
+            raw[8] = get_int("magnitude_signed", signed_byte(raw[8])) & 0xFF
             raw[21] = get_int("sound", raw[21])
         elif concept == "Float / blower":
             raw[10] = 32
             raw[9] = 0
-            raw[8] = get_int("magnitude_signed", _signed_byte(raw[8])) & 0xFF
-            raw[22] = get_int("multi_a_signed", _signed_byte(raw[22])) & 0xFF
+            raw[8] = get_int("magnitude_signed", signed_byte(raw[8])) & 0xFF
+            raw[22] = get_int("multi_a_signed", signed_byte(raw[22])) & 0xFF
             mode_var = vars.get("float_mode")
             raw[23] = 1 if (mode_var is None and raw[23]) or (mode_var is not None and str(mode_var.get()).startswith("vertical")) else 0
             raw[21] = get_int("sound", raw[21])
         elif concept == "Repel / sucker tube":
             raw[4] = combo_num("movement", raw[4] if raw[4] in {37, 38} else 37)
             raw[9] = 0
-            raw[8] = get_int("magnitude_signed", _signed_byte(raw[8])) & 0xFF
-            raw[22] = get_int("multi_a_signed", _signed_byte(raw[22])) & 0xFF
+            raw[8] = get_int("magnitude_signed", signed_byte(raw[8])) & 0xFF
+            raw[22] = get_int("multi_a_signed", signed_byte(raw[22])) & 0xFF
             mode_var = vars.get("repel_mode")
             raw[23] = 1 if (mode_var is None and raw[23]) or (mode_var is not None and str(mode_var.get()).startswith("vertical")) else 0
             raw[21] = get_int("sound", raw[21])
@@ -648,7 +644,7 @@ class EventDefsMixin:
     def _build_event_defs_tab(self) -> None:
         event_defs_tab = ttk.Frame(self.tabs, padding=8)
         self.event_defs_tab = event_defs_tab
-        self.global_event_defs_tab = event_defs_tab
+        self.level_local_event_defs_tab = event_defs_tab
         self.tabs.add(event_defs_tab, text="Events")
 
         selector = ttk.Frame(event_defs_tab)
@@ -783,7 +779,7 @@ class EventDefsMixin:
                 f"  modifier    = {raw[10]} ({modifier_meaning(raw[10])[0]})",
                 f"  left_anim   = {raw[5]}",
                 f"  right_anim  = {raw[6]}",
-                f"  magnitude   = {raw[8]} / signed {_signed_byte(raw[8])}",
+                f"  magnitude   = {raw[8]} / signed {signed_byte(raw[8])}",
                 f"  strength    = {raw[9]}",
                 f"  points      = {raw[11]}",
                 f"  bullet      = {raw[12]} ({bullet_type_label(raw[12])})",
@@ -830,7 +826,6 @@ class EventDefsMixin:
         self.level.event_types[event_id] = bytes(raw)
         self.set_dirty(True)
         self._event_preview_cache.clear()
-        self.populate_events()
         self.refresh_event_def_selector()
         self.refresh_object_palette()
         self.refresh_objects()
@@ -841,3 +836,5 @@ class EventDefsMixin:
         self.refresh_validation()
         uses = self.event_usage_counts().get(event_id, 0)
         self.status.set(f"Applied Event {event_id:03d} as '{concept}'. It affects {uses} placed object(s) in this level.")
+
+

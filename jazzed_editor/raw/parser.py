@@ -306,3 +306,4 @@ class JJ1Parser:
             sprites.append(frame)
         sprites.append(SpriteFrame(sprite_count, Image.new("RGBA", (1, 1), (0, 0, 0, 0)), 0, 0))
         return SpriteSetData(spec_path, main_path, sprites)
+

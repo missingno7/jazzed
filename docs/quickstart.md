@@ -37,6 +37,7 @@ game_data/
   BLOCKS.000
   SPRITES.000
   MAINCHAR.000
+  SOUNDS.000
 ```
 
 The exact file set depends on your Jazz release and episode data.
